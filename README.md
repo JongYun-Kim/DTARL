@@ -8,12 +8,12 @@
 ### Prerequisites
 ### Runnables
 
-
 ## TODO
-- [ ] Create sub-dirs such as model, env, experiment, ...
-- [ ] Migrate to ray 2.x
-- [ ] Compute optimal/near-optimal solutions based on existing solvers (e.g. OR tools, evolutionary algos, commercial solvers)
+- [ ] Static Env
+- [ ] Dynamic Env
+- [ ] Multi-robot Env/training
+- [ ] Better alignment
+  - [ ] Evaluate current alignment
+  - [ ] Better options (algorithm)? 
+    - [ ] Create a network better aligned to the algo
 
-[ ] a test
-- aa test
-> aaa test
