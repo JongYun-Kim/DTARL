@@ -3,6 +3,7 @@ import gym
 from gym.spaces import Box, Discrete, Dict
 # import matplotlib.pyplot as plt
 
+
 class SingleStaticEnv(gym.Env):
     def __init__(self, config):
         super(SingleStaticEnv, self).__init__()
@@ -12,10 +13,10 @@ class SingleStaticEnv(gym.Env):
         self.num_task = None  # current number of tasks
 
         # Observation space
-        embdding_dim = 2  # dimension of the vector where the task information is embedded; here 2 for x and y position
+        embedding_dim = 2  # dimension of the vector where the task information is embedded; here 2 for x and y position
         self.observation_space = Dict({  # task_embeddings: (seq_len, d_k) == (num_task_max, embedding_dim)
                                        "task_embeddings": Box(low=-np.inf, high=np.inf,
-                                                              shape=(self.num_task_max, embdding_dim),
+                                                              shape=(self.num_task_max, embedding_dim),
                                                               dtype=np.float32
                                                               ),  # Already embedded not (simple) tokens; also padded
                                        "num_task": Discrete(self.num_task_max),  # num of current tasks -1
@@ -88,7 +89,7 @@ class SingleStaticEnv(gym.Env):
         # Update the decision counter
         self.decision_count += 1
         # Compute the travel distance of the robot
-        reward = np.linalg.norm(self.robot_position - self.task_positions[action])
+        reward = -np.linalg.norm(self.robot_position - self.task_positions[action])
 
         # Update the robot position
         self.robot_position = self.task_positions[action]
