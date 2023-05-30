@@ -28,7 +28,7 @@ class MultiHeadAttentionLayer(nn.Module):
     def calculate_attention(self, query, key, value, mask):
         # query:      (n_batch, h, seq_len_query, d_k)
         # key, value: (n_batch, h, seq_len_key,   d_k)
-        # mask: (n_batch, 1, seq_len_query, seq_len_key)
+        # mask: (n_batch, 1, seq_len_query, seq_len_key)???  # TODO: Dimension (n_batch, seq_len_query, seq_len_key)???
         d_k = key.shape[-1]
         attention_score = torch.matmul(query, key.transpose(-2, -1))  # Q x K^T
         attention_score = attention_score / math.sqrt(d_k)   # (n_batch, h, seq_len_query, seq_len_key)
@@ -48,7 +48,7 @@ class MultiHeadAttentionLayer(nn.Module):
 
         def transform(x, x_fc):
             out = x_fc(x)           # (n_batch, seq_len_x, d_embed_x) -> (n_batch, seq_len_x, d_model)
-            out = out.view(n_batch, -1, self.h, self.d_model//self.h)  # (n_batch, x_seq_len, h, d_k )
+            out = out.view(n_batch, -1, self.h, self.d_model//self.h)  # (n_batch, seq_len_x, h, d_k )
             out = out.transpose(1, 2)
             return out  # (n_batch, h, x_seq_len, d_k)
 

@@ -44,18 +44,10 @@ class CustomDecoderBlock(nn.Module):
         # tgt_mask: (batch_size, 1, tgt_seq_len)
         # src_tgt_mask: (batch_size, tgt_seq_len, src_seq_len)
 
-        # Compute the mean of encoder_out along the sequence length dimension
-        # avg_enc_out shape: (batch_size, 1, d_model)
-        avg_enc_out = torch.mean(encoder_out, dim=1, keepdim=True)
-
-        # Expand avg_enc_out to the same size as tgt and concatenate along the last dimension
-        # tgt_concat shape: (batch_size, tgt_seq_len, 2*d_model)
-        tgt_concat = torch.cat((tgt, avg_enc_out.expand_as(tgt)), dim=-1)
-
         # MHA layer with query as the output of the first MHA layer
         # Shape: (batch_size, tgt_seq_len, d_model)
-        tgt = self.residual2(tgt_concat, lambda tgt: self.cross_attention(query=tgt, key=encoder_out, value=encoder_out,
-                                                                          mask=src_tgt_mask))
+        tgt = self.residual2(tgt, lambda tgt: self.cross_attention(query=tgt, key=encoder_out, value=encoder_out,
+                                                                   mask=src_tgt_mask))
 
         # Position-wise feed-forward network, applied only if include_ffn is True
         # Shape: (batch_size, tgt_seq_len, d_model)
@@ -63,7 +55,7 @@ class CustomDecoderBlock(nn.Module):
             tgt = self.residual3(tgt, self.position_ff)
 
         # Return the output tensor
-        # Shape: (batch_size, tgt_seq_len, d_model)
+        # Shape: (batch_size, tgt_seq_len, d_
         return tgt
 
 
@@ -127,8 +119,6 @@ class ProbablyAlmostUniversalDecoderBlockLol(nn.Module):  # Maybe act as a unive
         return out
 
 
-
-
 # class CustomDecoderBlock_outdated(nn.Module):
 #
 #     def __init__(self, cross_attention, position_ff, norm, dr_rate=0, include_ffn=True):
@@ -174,4 +164,3 @@ class ProbablyAlmostUniversalDecoderBlockLol(nn.Module):  # Maybe act as a unive
 #         # Return the output tensor
 #         # Shape: (batch_size, tgt_seq_len, d_model)
 #         return out
-

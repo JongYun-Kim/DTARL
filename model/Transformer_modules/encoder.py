@@ -15,4 +15,4 @@ class Encoder(nn.Module):
         for layer in self.layers:
             out = layer(out, src_mask)
         out = self.norm(out)
-        return out  # shape: (batch_size, src_seq_len, d_model)
+        return out  # shape: (batch_size, src_seq_len, d_embed)

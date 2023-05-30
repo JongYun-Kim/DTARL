@@ -20,3 +20,9 @@ class LinearEmbedding(nn.Module):
         super(LinearEmbedding, self).__init__()
         self.embedding = nn.Linear(d_env, d_embed)
         self.d_embed = d_embed
+
+    def forward(self,
+                x  # shape: (batch_size, seq_len, d_env)
+                ):
+        out = self.embedding(x)
+        return out  # shape: (batch_size, seq_len, d_embed)
