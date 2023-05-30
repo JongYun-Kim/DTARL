@@ -28,22 +28,23 @@ from model.Transformer_modules.encoder_block import EncoderBlock
 from model.Transformer_modules.decoder_block import CustomDecoderBlock as DecoderBlock
 from model.Transformer_modules.encoder import Encoder
 from model.Transformer_modules.decoder import Decoder
-from model.Transformer_modules.pointer_net import PointerGenerator
+from model.Transformer_modules.pointer_net import PointerProbGenerator
 
 # TODO (1): [o] Create model layers individually if necessary (e.g. attention_encoder, ...)
-# TODO (2): [x] Check masks
-#       TODO (2-1): [x] padding mask in attention (encoder, decoder)
-#       TODO (2-2): [x] action mask in attention (decoder ONLY!)
-# TODO (3): [x] Determine how to use state of the model
-#      TODO (3-1): [x] Determine how do we use task-forward pass
-#      TODO (3-2): [x] Determine the shape of it
-#      TODO (3-3): [x] Use two learnable placeholders to assemble the context vector in the decoder
+# TODO (2): [o] Check masks
+#       TODO (2-1): [o] padding mask in attention (encoder, decoder)
+#       TODO (2-2): [o] action mask in attention (decoder ONLY!)
+# TODO (3): [o] Determine how to use state of the model
+#      TODO (3-1): [o] Determine how do we use task-forward pass
+#      TODO (3-2): [o] Determine the shape of it
+#      TODO (3-3): [o] Use two learnable placeholders to assemble the context vector in the decoder
 #                      allow it only when task-forward count==1
-# TODO (4): [x] Get generator to work (consider clipping the vals before masking)
-# TODO (5): [x] In the comments get the right dimensions of tensors that are actually used across all the modules
-#               (everywhere. particularly d_embed; it is used interchangeably with d_model...!)
-# TODO (6): [x] Consider dropping out the dropout layers in the modules of the model as we are dealing with RL.
+# TODO (4): [o] Get generator to work (consider clipping the vals before masking)
+# TODO (5): [x; waiting] In the comments get the right dimensions of tensors that are actually used across
+#               all the modules (everywhere. particularly d_embed; it is used interchangeably with d_model...!)
+# TODO (6): [x; PENDING] Consider dropping out the dropout layers in the modules of the model as we are dealing with RL.
 #               see others' implementations;
+# TODO (7): [x] Get rid of the lint or linting errors
 
 # TODO: [o] Add the embedding layer (src embedding)
 # TODO: [o] Take copy out of the model (Plz ask him!)
@@ -63,31 +64,128 @@ class MyCustomTransformerModel(nn.Module):
         self.decoder = decoder
         self.generator = generator
 
-    # def encode_out_dated(self, src, src_mask):
+        action_context_dim = self.src_embed.d_embed  # embedding dimension size of an encoder input
+        # self.action_context_vec1 = nn.Parameter(torch.randn(1, 1, action_context_dim))  # (batch_size, 1, d_embed)
+        # self.action_context_vec2 = nn.Parameter(torch.randn(1, 1, action_context_dim))  # (batch_size, 1, d_embed)
+
+        # Learnable parameters: shape (1, 1, data_size); it will be extended to (batch_size, 1, data_size) at maximum
+        self.h_first_learnable = nn.Parameter(torch.randn(1, 1, action_context_dim))  # (1, 1, d_embed)
+        self.h_last_learnable = nn.Parameter(torch.randn(1, 1, action_context_dim))  # (1, 1, d_embed)
+
+    # def encode_outdated(self, src, src_mask):
     #     return self.encoder(self.src_embed(src), src_mask)
     #
-    # def decode_out_dated(self, tgt, encoder_out, tgt_mask, src_tgt_mask):
+    # def decode_outdated(self, tgt, encoder_out, tgt_mask, src_tgt_mask):
     #     return self.decoder(self.tgt_embed(tgt), encoder_out, tgt_mask, src_tgt_mask)
 
-    def encode(self, src, src_mask):
+    def encode(self, src_dict, src_mask):
+        src = src_dict["task_embeddings"]
+        src = self.src_embed(src)
         return self.encoder(src, src_mask)
+        # return self.encoder(self.src_embed(src), src_mask)
 
     def decode(self, tgt, encoder_out, tgt_mask, src_tgt_mask):
         return self.decoder(tgt, encoder_out, tgt_mask, src_tgt_mask)
+        # return self.decoder(self.tgt_embed(tgt), encoder_out, tgt_mask, src_tgt_mask)
+
+    def get_context_node(self, obs, prev_action, first_action):
+        # obs: shape (batch_size, num_task, data_size)
+        # prev_action: shape (batch_size,)
+        # first_action: shape (batch_size,)
+
+        # Calculate batch_size, num_task, data_size from obs
+        batch_size, num_task, data_size = obs.shape
+
+        # Compute the average observation: shape (batch_size, 1, data_size)
+        obs_avg = torch.mean(obs, dim=1, keepdim=True)
+
+        # Initializing h_first and h_last with zeros: shape (batch_size, 1, data_size)
+        h_first = torch.zeros(batch_size, 1, data_size)
+        h_last = torch.zeros(batch_size, 1, data_size)
+
+        # Create masks for the condition where first_action and prev_action are -1
+        # These masks will have shape (batch_size,)
+        mask_first_action_minus = first_action == -1
+        mask_prev_action_minus = prev_action == -1
+
+        # If the condition is met, fill in h_first and h_last with the corresponding learnable parameters
+        # Expand the learnable parameters to match the sum of the conditions in the batch
+        h_first[mask_first_action_minus] = self.h_first_learnable.expand(mask_first_action_minus.sum(), 1, data_size)
+        h_last[mask_prev_action_minus] = self.h_last_learnable.expand(mask_prev_action_minus.sum(), 1, data_size)
+
+        # Create masks for the condition where first_action and prev_action are not -1
+        # These masks will have shape (batch_size,)
+        mask_first_action_not_minus = first_action != -1
+        mask_prev_action_not_minus = prev_action != -1
+
+        # If the condition is met, fill in h_first and h_last with the corresponding part from obs
+        # Unsqueeze is used to match the dimensions: shape (batch_size, 1, data_size)
+        h_first[mask_first_action_not_minus] = obs[
+                                               mask_first_action_not_minus,
+                                               first_action[mask_first_action_not_minus].long(),
+                                               :
+                                               ].unsqueeze(1)
+        h_last[mask_prev_action_not_minus] = obs[
+                                             mask_prev_action_not_minus,
+                                             prev_action[mask_prev_action_not_minus].long(),
+                                             :
+                                             ].unsqueeze(1)
+
+        # Concatenate obs_avg, h_first, and h_last along the data_size dimension
+        # The resulting tensor, h_c, will have shape (batch_size, 1, 3*data_size)
+        h_c = torch.cat([obs_avg, h_first, h_last], dim=-1)
+
+        return h_c
 
     def forward(self,
-                src,  # shape: (batch_size, src_seq_len, d_embed)  # already padded and embedded
-                tgt,  # shape: (batch_size, tgt_seq_len, d_embed)
+                src_dict,  # shape: (batch_size, src_seq_len, d_embed)  # already padded and embedded
+                # tgt,  # shape: (batch_size,)  # They are previous actions
                 # src_pad_tokens,  # shape: (batch_size, src_seq_len)
                 # tgt_pad_tokens,  # shape: (batch_size, tgt_seq_len)
                 ):
-        src_mask = self.make_src_mask(src)  # TODO: Get the right pad tokens; from src_pad_tokens!
-        tgt_mask = self.make_src_mask(tgt)
-        src_tgt_mask = self.make_src_tgt_mask(src, tgt)
-        encoder_out = self.encode(src, src_mask)
-        decoder_out = self.decode(tgt, encoder_out, tgt_mask, src_tgt_mask)  # shape: (batch_size, tgt_seq_len, d_embed)
-        out = self.generator(decoder_out)
-        out = F.log_softmax(out, dim=-1)
+        # Please keep in mind that here sequence is
+        # What is src mask?
+        # This is the mask that is used in the encoder to mask the padding tokens in the MultiHeadAttentionLayer
+        # It does not mask
+
+        # Prepare tokens for mask generations and context node
+        # TODO: Check dims of the following tensors;
+        #       See the dims of Box(shape=()), Box(shape=(1,)), Discrete(n)
+        pad_tokens = src_dict["pad_tokens"]
+        action_tokens = src_dict["completion_tokens"]
+        context_token = torch.zeros_like(pad_tokens[:, 0])  # represents the context vector h_c (Never padded, val==0)
+        context_token = context_token.unsqueeze(1)  # shape: (batch_size, 1)
+        prev_actions = src_dict["prev_action"]  # shape: (batch_size,)
+        first_actions = src_dict["first_action"].squeeze(1)  # shape: (batch_size,)
+
+        # Encoder mask
+        src_mask_pad = self.make_src_mask(pad_tokens)
+        src_mask = src_mask_pad
+
+        # Decoder masks
+        # tgt_mask: shape: (batch_size, seq_len_tgt, seq_len_tgt); used for self-attention in the decoder
+        # src_tgt_mask: shape: (batch_size, seq_len_tgt, seq_len_src); used for cross-attention in the decoder
+        tgt_mask = None
+        src_tgt_submask_pad = self.make_src_tgt_mask(pad_tokens, context_token)  # query is the context vector; ...
+        src_tgt_submask_action = self.make_src_tgt_mask(action_tokens, context_token)
+        src_tgt_mask = src_tgt_submask_pad & src_tgt_submask_action
+
+        # Encoder
+        # encoder_out: shape: (batch_size, src_seq_len, d_embed)
+        encoder_out = self.encode(src_dict, src_mask.unsqueeze(1))  # a set of task embeddings; permutation invariant
+        # get the context vector
+        # h_c_N: shape: (batch_size, 1, d_embed_context);  d_embed_context == 3 * d_embed
+        h_c_N = self.get_context_node(obs=encoder_out, prev_action=prev_actions, first_action=first_actions)
+        # decoder_out: (batch_size, tgt_seq_len, d_embed_context)
+        # tgt_seq_len == 1 in our case
+        decoder_out = self.decode(h_c_N, encoder_out, tgt_mask, src_tgt_mask.unsqueeze(1))  # h_c^(N+1)
+        # Generator: query==decoder_out; key==encoder_out; return==logits
+        # out: (batch_size, 1, seq_len_src
+        out = self.generator(query=decoder_out, key=encoder_out, mask=src_tgt_mask)
+        assert out.shape[1] == 1  # TODO: Remove it later once the model is stable
+        # Get the logits
+        out = out.squeeze(1)
+        # out: (batch_size, src_seq_len) == (batch_size, n_actions) == (batch_size, num_task_max)
         return out, decoder_out
 
     def make_src_mask(self, src):
@@ -101,14 +199,17 @@ class MyCustomTransformerModel(nn.Module):
     #     return pad_mask & seq_mask
 
     def make_src_tgt_mask(self, src, tgt):
+        # src: key/value; tgt: query
         pad_mask = self.make_pad_mask(tgt, src)
         return pad_mask
 
     def make_pad_mask(self, query, key, pad_idx=1, dim_check=False):
+    # def make_pad_mask(self, query, key, pad_idx=0, dim_check=True):  # TODO: dim_check=False later!!
         # query: (n_batch, query_seq_len)
         # key: (n_batch, key_seq_len)
         # If input_token==pad_idx, then the mask value is 0, else 1
-        # In the MHA layer, (no attention) == (mask value is 0) == (input_token==pad_idx)
+        # In the MHA layer, (no attention) == (attention_score: -inf) == (mask value is 0) == (input_token==pad_idx)
+        # WARNING: Choose pad_idx carefully, particularly about the data type (e.g. float, int, ...)
 
         # Check if the query and key have the same dimension
         if dim_check:
@@ -118,15 +219,17 @@ class MyCustomTransformerModel(nn.Module):
 
         query_seq_len, key_seq_len = query.size(1), key.size(1)
 
-        key_mask = key.ne(pad_idx).unsqueeze(1).unsqueeze(2)  # (n_batch, 1, 1, key_seq_len)
-        key_mask = key_mask.repeat(1, 1, query_seq_len, 1)  # (n_batch, 1, query_seq_len, key_seq_len)
+        key_mask = key.ne(pad_idx).unsqueeze(1)  # (n_batch, 1, key_seq_len)
+        # TODO: Maybe we don't need to repeat the masks; The & operation will broadcast the mask
+        #       Check it and remove the repeat operation if it is not necessary
+        key_mask = key_mask.repeat(1, query_seq_len, 1)  # (n_batch, query_seq_len, key_seq_len)
 
-        query_mask = query.ne(pad_idx).unsqueeze(1).unsqueeze(3)  # (n_batch, 1, query_seq_len, 1)
-        query_mask = query_mask.repeat(1, 1, 1, key_seq_len)  # (n_batch, 1, query_seq_len, key_seq_len)
+        query_mask = query.ne(pad_idx).unsqueeze(2)  # (n_batch, query_seq_len, 1)
+        query_mask = query_mask.repeat(1, 1, key_seq_len)  # (n_batch, query_seq_len, key_seq_len)
 
         mask = key_mask & query_mask
         mask.requires_grad = False
-        return mask  # (n_batch, 1, query_seq_len, key_seq_len)
+        return mask  # output shape: (n_batch, query_seq_len, key_seq_len)
 
     # def make_pad_mask(self, query, key, pad_value=0, dim_check=False):
     #     """
@@ -194,6 +297,7 @@ class MyCustomRLlibModel(TorchModelV2, nn.Module):
         n_layer_decoder = 1
         h = 8  # number of heads
         d_ff = 512  # dimension of feed forward; usually 2-4 times d_model
+        clip_in_generator = 10
         dr_rate = 0  # dropout rate; 0 in our case as we use reinforcement learning... Or may not?
         norm_eps = 1e-5  # epsilon parameter of layer normalization  # TODO: Check if this value works fine
 
@@ -270,9 +374,15 @@ class MyCustomRLlibModel(TorchModelV2, nn.Module):
             decoder_block=decoder_block,
             n_layer=n_layer_decoder,
             # norm=dpcopy(norm_decoder),)
-            norm=None, )  # TODO: Decide whether to include norm in the decoder!! you can pass None if not needed
+            norm=None,)  # TODO: Decide whether to include norm in the decoder!! you can pass None if not needed
         action_size = action_space.n  # it gives n given that action_space is Discrete(n).
-        generator = PointerGenerator()  # outputs a probability distribution over the input sequence
+        generator = PointerProbGenerator(
+            d_model=d_model,
+            q_fc=nn.Linear(d_embed_context, d_model),
+            k_fc=nn.Linear(d_embed_input, d_model),
+            clip_value=clip_in_generator,
+            dr_rate=dr_rate,
+        )  # outputs a probability distribution over the input sequence
 
         # Initialize state
         # self.state
@@ -287,7 +397,8 @@ class MyCustomRLlibModel(TorchModelV2, nn.Module):
         )
         # Define the critic layer
         self.values = None
-        self.value_net = nn.Linear(d_model, 1)
+        num_actions = action_space.n
+        self.value_net = nn.Linear(num_actions, 1)
 
     def forward(self, input_dict, state, seq_lens):
         """
@@ -297,12 +408,21 @@ class MyCustomRLlibModel(TorchModelV2, nn.Module):
         :return: x, state
         """
         x = input_dict["obs"]
-        x, state = self.policy_net(x, state)
+
+        # Check if the data type of the pad tokens is torch's int32; if not, output a warning and convert it to int32
+        # temp_token = x["pad_tokens"][0][0]
+        # if temp_token.dtype != torch.int32:
+        #     print("Warning: The data type of the pad tokens is not torch's int32. Converting it to int32...")
+        #     for _ in range(10): print("The data type of the pad tokens was: ", type(temp_token))
+        #     x["pad_tokens"] = x["pad_tokens"].type(torch.int32)
+
+        x, _ = self.policy_net(x)  # x: logits
         self.values = x
         # Do the rest of the forward pass here, if necessary
 
         return x, state
 
     def value_function(self):
-        return torch.mean(self.value_net(self.values))
+        # return torch.mean(self.value_net(self.values))
+        return self.value_net(self.values).squeeze(-1)
 
