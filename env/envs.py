@@ -110,15 +110,19 @@ class SingleStaticEnv(gym.Env):
         # if action < 0 or action >= self.num_task:
         #     raise ValueError(f"Invalid action: {action} is not in [0, {self.num_task})")
         if action >= self.num_task:  # TODO: YOU MUST REMOVE THIS; JUST FOR DEBUGGING
-            print(f"Invalid action: {action} is not in [0, {self.num_task})")
+            # print(f"Invalid action: {action} is not in [0, {self.num_task})")
             action = np.random.randint(low=0, high=self.num_task)
-            print(f"Now, randomly selected action: {action}")
+            # print(f"Now, randomly selected action: {action}")
 
         # Update the decision counter
         self.decision_count += 1
 
         # Compute the travel distance of the robot
+        # TODO: We may have to normalize the reward by the current num_task; done for now... but
         reward = -np.linalg.norm(self.robot_position - self.task_positions[action, :])
+        # Normalize the reward by the number of tasks and outputs error if the num_task is 0
+        # TODO:
+        reward /= self.num_task  # self.num_task will never be 0; if you amend the code, you may want to assert this
         # Update the robot position
         self.robot_position = self.task_positions[action, :]
         # Update the task embeddings
