@@ -9,7 +9,7 @@ class SingleStaticEnv(gym.Env):
     def __init__(self, config):
         super(SingleStaticEnv, self).__init__()
 
-        #
+        # Task number information
         self.num_task_max = config["num_task_max"]  # maximum number of tasks for padding of the observation
         self.num_task = None  # current number of tasks
 
@@ -30,7 +30,7 @@ class SingleStaticEnv(gym.Env):
                                        "prev_action": Box(low=-1, high=self.num_task_max-1, shape=(), dtype=np.int64),
                                        # TODO: MUST:: Can I get prev_action not in an array but in a single value?
                                        #             if you want to amend the form, you may want to make a change in
-                                       #             the model accordingly!! (applying squeeze(!!) the var in the model)
+                                       #             the model accordingly!! (applying squeeze(!!) the val in the model)
                                        "first_action": Box(low=-1, high=self.num_task_max-1, shape=(1,), dtype=np.int32),
                                        # "time_decision": Discrete(self.num_task_max+1),
                                        # "real_clock": Box(low=0, high=np.inf, shape=(1,)),
@@ -62,8 +62,8 @@ class SingleStaticEnv(gym.Env):
 
         # Generate positions of the tasks and the robot
         self.num_task = np.random.randint(low=1, high=self.num_task_max+1)
-        self.robot_position = np.random.uniform(low=-1.0, high=1.0, size=(2,))
-        self.task_positions = np.random.uniform(low=-1.0, high=1.0, size=(self.num_task, 2))
+        self.robot_position = np.random.uniform(low=-0.5, high=0.5, size=(2,))
+        self.task_positions = np.random.uniform(low=-0.5, high=0.5, size=(self.num_task, 2))
         # Task embeddings are relative positions of the tasks from the robot
         self.task_embeddings = np.zeros(shape=(self.num_task_max, 2), dtype=np.float32)
         self.task_embeddings[:self.num_task, :] = self.task_positions - self.robot_position
@@ -110,18 +110,18 @@ class SingleStaticEnv(gym.Env):
         # if action < 0 or action >= self.num_task:
         #     raise ValueError(f"Invalid action: {action} is not in [0, {self.num_task})")
         if action >= self.num_task:  # TODO: YOU MUST REMOVE THIS; JUST FOR DEBUGGING
-            # print(f"Invalid action: {action} is not in [0, {self.num_task})")
+            print(f"Invalid action: {action} is not in [0, {self.num_task})")
             action = np.random.randint(low=0, high=self.num_task)
-            # print(f"Now, randomly selected action: {action}")
+            print(f"    Now, randomly selected action: {action}")
 
         # Update the decision counter
         self.decision_count += 1
 
         # Compute the travel distance of the robot
-        # TODO: We may have to normalize the reward by the current num_task; done for now... but
         reward = -np.linalg.norm(self.robot_position - self.task_positions[action, :])
         # Normalize the reward by the number of tasks and outputs error if the num_task is 0
-        # TODO:
+        # reward /= 2.0  # tasks were generated in [-1, 1] x [-1, 1]; make it equivalent to the unit square case
+        # TODO: We may have to normalize the reward by the current num_task; done for now... but
         reward /= self.num_task  # self.num_task will never be 0; if you amend the code, you may want to assert this
         # Update the robot position
         self.robot_position = self.task_positions[action, :]
