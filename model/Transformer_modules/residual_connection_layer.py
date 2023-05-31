@@ -18,6 +18,9 @@ class ResidualConnectionLayer(nn.Module):
 
 
 class IdentityResidualLayer(nn.Module):
+    """
+    It does residual connection without any trainable parameters (e.g. nn.LayerNorm, nn.Dropout, etc.).
+    """
     def __init__(self):
         super(IdentityResidualLayer, self).__init__()
 
@@ -45,3 +48,15 @@ class IdentityResidualLayer(nn.Module):
         and can sometimes make your code more organized and easier to manage.
         """
         return x + sub_layer(x, *args, **kwargs)
+
+
+class NoResidualButSameForward(nn.Module):
+    """
+    It does not do residual connection but it does the same forward pass as the sub_layer.
+    """
+    def __init__(self):
+        super(NoResidualButSameForward, self).__init__()
+
+    def forward(self, x, sub_layer, *args, **kwargs):
+        # Just to align with the grammar of the placeholder where this class is replaced
+        return sub_layer(x, *args, **kwargs)

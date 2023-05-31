@@ -22,7 +22,7 @@ class LinearEmbedding(nn.Module):
         self.d_embed = d_embed
 
     def forward(self,
-                x  # shape: (batch_size, seq_len, d_env)
+                x  # shape: (batch_size, seq_len, d_env); d_env: dimension of ray environment observation to process
                 ):
         out = self.embedding(x)
         return out  # shape: (batch_size, seq_len, d_embed)

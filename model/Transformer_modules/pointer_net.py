@@ -42,11 +42,11 @@ class PointerProbGenerator(nn.Module):
         attention_score = attention_score / math.sqrt(d_k)  # Scale the attention scores
         if mask is not None:
             attention_score = attention_score.masked_fill(mask == 0, -1e9)  # Apply the mask to the attention scores
-        attention_prob = F.softmax(attention_score, dim=-1)  # Apply softmax to get the attention probabilities
-        attention_prob = self.dropout(attention_prob)  # Apply dropout
-        # if batch_size != 1:
-        #     print("batch_size != 1")
-        return attention_prob  # (n_batch, seq_len_query, seq_len_key) - The attention probabilities
+        # attention_prob = F.softmax(attention_score, dim=-1)  # Apply softmax to get the attention probabilities
+        # attention_prob = self.dropout(attention_prob)  # Apply dropout
+        # attention_prob: (n_batch, seq_len_query, seq_len_key) - The attention probabilities
+        # attention_score: (n_batch, seq_len_query, seq_len_key) - The attention scores
+        return attention_score  # , attention_prob
 
     def forward(self, *args, query, key, mask=None):
         # query:      (n_batch, seq_len_query, d_embed_query) - Batch of query vectors

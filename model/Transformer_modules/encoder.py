@@ -11,6 +11,8 @@ class Encoder(nn.Module):
         self.norm = norm
 
     def forward(self, src, src_mask):
+        # src: shape: (batch_size, src_seq_len, d_embed==d_embed_input)
+        # src_mask: shape: (batch_size, 1, src_seq_len, src_seq_len)
         out = src
         for layer in self.layers:
             out = layer(out, src_mask)

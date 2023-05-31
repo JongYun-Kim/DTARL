@@ -43,14 +43,14 @@ class MultiHeadAttentionLayer(nn.Module):
         # query:      (n_batch, seq_len_query, d_embed_query)
         # key, value: (n_batch, seq_len_key,   d_embed_key)
         # mask: (n_batch, seq_len_query, seq_len_key)
-        # return value: (n_batch,
+        # return value: (n_batch, seq_len_query, d_embed_MHA_out); mostly idempotent: (query)==(return value)
         n_batch = query.size(0)
 
         def transform(x, x_fc):
             out = x_fc(x)           # (n_batch, seq_len_x, d_embed_x) -> (n_batch, seq_len_x, d_model)
             out = out.view(n_batch, -1, self.h, self.d_model//self.h)  # (n_batch, seq_len_x, h, d_k )
             out = out.transpose(1, 2)
-            return out  # (n_batch, h, x_seq_len, d_k)
+            return out  # (n_batch, h, seq_len_x, d_k)
 
         query = transform(query, self.q_fc)  # (n_batch, h, seq_len_query, d_k)
         key = transform(key, self.k_fc)      # (n_batch, h, seq_len_key,   d_k)
