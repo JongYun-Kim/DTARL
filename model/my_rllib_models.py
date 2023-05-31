@@ -40,11 +40,18 @@ from model.Transformer_modules.pointer_net import PointerProbGenerator
 #      TODO (3-3): [o] Use two learnable placeholders to assemble the context vector in the decoder
 #                      allow it only when task-forward count==1
 # TODO (4): [o] Get generator to work (consider clipping the vals before masking)
-# TODO (5): [x; waiting] In the comments get the right dimensions of tensors that are actually used across
+# TODO (5): [o?] In the comments get the right dimensions of tensors that are actually used across
 #               all the modules (everywhere. particularly d_embed; it is used interchangeably with d_model...!)
 # TODO (6): [x; PENDING] Consider dropping out the dropout layers in the modules of the model as we are dealing with RL.
 #               see others' implementations;
-# TODO (7): [x] Get rid of the lint or linting errors
+# TODO (7): [4] Get rid of the lint or linting errors
+# TODO (8): [x] See the real data
+#      TODO (8-1): [x] Masks with tokens
+#      TODO (8-2): [x] logits with masks
+#      TODO (8-3): [x] actions; any invalid actions?
+#      TODO (8-4): [x]
+# TODO (9): [o] Value Branch !!!!!!!!!!!!!!!!! or should we
+# TODO (10): [o] FATAL: MUST GET RID OF SOFTMAX IN THE GENERATOR as it allows the invalid actions to be chosen
 
 # TODO: [o] Add the embedding layer (src embedding)
 # TODO: [o] Take copy out of the model (Plz ask him!)
@@ -58,6 +65,9 @@ class MyCustomTransformerModel(nn.Module):
                  decoder,
                  generator,):
         super(MyCustomTransformerModel, self).__init__()
+
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
         self.src_embed = src_embed
         # self.tgt_embed = tgt_embed
         self.encoder = encoder
@@ -65,56 +75,46 @@ class MyCustomTransformerModel(nn.Module):
         self.generator = generator
 
         action_context_dim = self.src_embed.d_embed  # embedding dimension size of an encoder input
-        # self.action_context_vec1 = nn.Parameter(torch.randn(1, 1, action_context_dim))  # (batch_size, 1, d_embed)
-        # self.action_context_vec2 = nn.Parameter(torch.randn(1, 1, action_context_dim))  # (batch_size, 1, d_embed)
 
-        # Learnable parameters: shape (1, 1, data_size); it will be extended to (batch_size, 1, data_size) at maximum
+        # Learnable parameters: (1, 1, data_size); it will be extended to (batch_size, 1, data_size) at maximum
         self.h_first_learnable = nn.Parameter(torch.randn(1, 1, action_context_dim))  # (1, 1, d_embed)
         self.h_last_learnable = nn.Parameter(torch.randn(1, 1, action_context_dim))  # (1, 1, d_embed)
 
-    # def encode_outdated(self, src, src_mask):
-    #     return self.encoder(self.src_embed(src), src_mask)
-    #
-    # def decode_outdated(self, tgt, encoder_out, tgt_mask, src_tgt_mask):
-    #     return self.decoder(self.tgt_embed(tgt), encoder_out, tgt_mask, src_tgt_mask)
-
     def encode(self, src, src_mask):
-        # src: (batch_size, num_task==seq_len, d_embed)
-        # src_mask: (batch_size, seq_len_src, seq_len_src)
+        # src: (batch_size, num_task==seq_len, d_embed_input)
+        # src_mask: (batch_size, 1, seq_len_src, seq_len_src)
+        # return: (batch_size, seq_len_src, d_embed_input)
         return self.encoder(self.src_embed(src), src_mask)
 
     def decode(self, tgt, encoder_out, tgt_mask, src_tgt_mask):
         # tgt: (batch_size, seq_len_tgt==1, d_embed_context)
-        # encoder_out: (batch_size, seq_len_src, d_embed
+        # encoder_out: (batch_size, seq_len_src, d_embed_input)
+        # tgt_mask: (batch_size, 1, seq_len_tgt, seq_len_tgt)
+        # src_tgt_mask: (batch_size, 1, seq_len_tgt, seq_len_src)
+        # return: (batch_size, seq_len_tgt, d_embed_context)
+        # If you need tgt_embed, use self.tgt_embed(tgt) instead of tgt in self.decoder()
         return self.decoder(tgt, encoder_out, tgt_mask, src_tgt_mask)
-        # return self.decoder(self.tgt_embed(tgt), encoder_out, tgt_mask, src_tgt_mask)
 
     def get_context_node(self, obs, prev_action, first_action, pad_tokens, use_obs_mask=True, debug=False):
-        # obs: shape (batch_size, num_task_max, data_size)
+        # obs: shape (batch_size, num_task_max==seq_len_src, data_size==d_embed_input)
         # prev_action: shape (batch_size,)
         # first_action: shape (batch_size,)
+        # pad_tokens: shape (batch_size, num_task_max==seq_len_src)
 
-        # TODO: Should we use a mask not to consider the padded observations in the obs_avg computation?
-        #       I think so?
-        #       ... This has been added with use_obs_mask but you need to test it.
-        #       ... And to improve the efficiency of it.
-
-        # Calculate batch_size, num_task, data_size from obs
+        # Obtain batch_size, num_task, data_size from obs
         batch_size, num_task_max, data_size = obs.shape
 
         if use_obs_mask:
             # Expand the dimensions of pad_tokens to match the shape of obs
-            mask = pad_tokens.unsqueeze(-1).expand_as(obs)  # shape (batch_size, num_task_max, data_size)
+            mask = pad_tokens.unsqueeze(-1).expand_as(obs)  # (batch_size, num_task_max, data_size)
 
             # Replace masked values with zero for the average computation
-            obs_masked = torch.where(mask == 1, obs, torch.zeros_like(obs))  # shape (batch_size, num_task_max, data_size)
+            # obs_masked: (batch_size, num_task_max, data_size)
+            obs_masked = torch.where(mask == 1, obs, torch.zeros_like(obs))
 
             # Compute the sum and count non-zero elements
-            obs_sum = torch.sum(obs_masked, dim=1, keepdim=True)  # shape (batch_size, 1, data_size)
-            obs_count = torch.sum((mask == 0), dim=1, keepdim=True).float()
-
-            # if batch_size != 1:
-            #     print("batch_size != 1")
+            obs_sum = torch.sum(obs_masked, dim=1, keepdim=True)  # (batch_size, 1, data_size)
+            obs_count = torch.sum((mask == 0), dim=1, keepdim=True).float()  # (batch_size, 1, data_size)
 
             # Check if there is any sample where all tasks are padded
             if debug:
@@ -128,8 +128,10 @@ class MyCustomTransformerModel(nn.Module):
             obs_avg = torch.mean(obs, dim=1, keepdim=True)  # num_task_max dim is reduced
 
         # Initializing h_first and h_last with zeros: shape (batch_size, 1, data_size)
-        h_first = torch.zeros(batch_size, 1, data_size)
-        h_last = torch.zeros(batch_size, 1, data_size)
+        # h_first = torch.zeros(batch_size, 1, data_size).to(self.device)
+        # h_last = torch.zeros(batch_size, 1, data_size).to(self.device)
+        h_first = torch.zeros_like(obs_avg)  # shape (batch_size, 1, data_size); same device as obs_avg
+        h_last = torch.zeros_like(obs_avg)
 
         # Create masks for the condition where first_action and prev_action are -1
         # These masks will have shape (batch_size,)
@@ -160,7 +162,7 @@ class MyCustomTransformerModel(nn.Module):
                                              ].unsqueeze(1)
 
         # Concatenate obs_avg, h_first, and h_last along the data_size dimension
-        # The resulting tensor, h_c, will have shape (batch_size, 1, 3*data_size)
+        # The resulting tensor, h_c, will have shape (batch_size, 1, 3*data_size==d_embed_context
         h_c = torch.cat([obs_avg, h_first, h_last], dim=-1)
 
         return h_c
@@ -171,13 +173,15 @@ class MyCustomTransformerModel(nn.Module):
                 # src_pad_tokens,  # shape: (batch_size, src_seq_len)
                 # tgt_pad_tokens,  # shape: (batch_size, tgt_seq_len)
                 ):
+        self.device = src_dict["task_embeddings"].device
+
         # Prepare tokens for mask generations and context node
         # TODO: Check dims of the following tensors;
         #       See the dims of Box(shape=()), Box(shape=(1,)), Discrete(n);
         pad_tokens = src_dict["pad_tokens"]  # shape: (batch_size, seq_len_src==num_task_max)
-        action_tokens = src_dict["completion_tokens"]
-        context_token = torch.zeros_like(pad_tokens[:, 0])  # represents the context vector h_c (Never padded, val==0)
-        context_token = context_token.unsqueeze(1)  # shape: (batch_size, 1)
+        action_tokens = src_dict["completion_tokens"]  # shape: (batch_size, num_task_max)
+        # context_token: (batch_size, 1); on the same device as pad_tokens
+        context_token = torch.zeros_like(pad_tokens[:, 0:1])  # represents the context vector h_c (Never padded, val==0)
         prev_actions = src_dict["prev_action"]  # shape: (batch_size,)
         first_actions = src_dict["first_action"].squeeze(1)  # shape: (batch_size,)
 
@@ -206,9 +210,9 @@ class MyCustomTransformerModel(nn.Module):
         # tgt_seq_len == 1 in our case
         decoder_out = self.decode(h_c_N, encoder_out, tgt_mask, src_tgt_mask.unsqueeze(1))  # h_c^(N+1)
         # Generator: query==decoder_out; key==encoder_out; return==logits
-        # out: (batch_size, 1, seq_len_src
+        # out: (batch_size, 1, seq_len_src==num_task_max)
         out = self.generator(query=decoder_out, key=encoder_out, mask=src_tgt_mask)
-        assert out.shape[1] == 1  # TODO: Remove it later once the model is stable
+        # assert out.shape[1] == 1  # TODO: Remove it later once the model is stable
         # Get the logits
         out = out.squeeze(1)
         # out: (batch_size, src_seq_len) == (batch_size, n_actions) == (batch_size, num_task_max)
@@ -216,7 +220,7 @@ class MyCustomTransformerModel(nn.Module):
 
     def make_src_mask(self, src):
         pad_mask = self.make_pad_mask(src, src)
-        return pad_mask
+        return pad_mask  # (batch_size, seq_len_src, seq_len_src)
 
     # def make_tgt_mask_outdated(self, tgt):
     #     pad_mask = self.make_pad_mask(tgt, tgt)
@@ -227,10 +231,9 @@ class MyCustomTransformerModel(nn.Module):
     def make_src_tgt_mask(self, src, tgt):
         # src: key/value; tgt: query
         pad_mask = self.make_pad_mask(tgt, src)
-        return pad_mask
+        return pad_mask  # (batch_size, seq_len_tgt, seq_len_src)
 
     def make_pad_mask(self, query, key, pad_idx=1, dim_check=False):
-    # def make_pad_mask(self, query, key, pad_idx=0, dim_check=True):  # TODO: dim_check=False later!!
         # query: (n_batch, query_seq_len)
         # key: (n_batch, key_seq_len)
         # If input_token==pad_idx, then the mask value is 0, else 1
@@ -245,9 +248,7 @@ class MyCustomTransformerModel(nn.Module):
 
         query_seq_len, key_seq_len = query.size(1), key.size(1)
 
-        key_mask = key.ne(pad_idx).unsqueeze(1)  # (n_batch, 1, key_seq_len)
-        # TODO: Maybe we don't need to repeat the masks; The & operation will broadcast the mask
-        #       Check it and remove the repeat operation if it is not necessary
+        key_mask = key.ne(pad_idx).unsqueeze(1)  # (n_batch, 1, key_seq_len); on the same device as key
         key_mask = key_mask.repeat(1, query_seq_len, 1)  # (n_batch, query_seq_len, key_seq_len)
 
         query_mask = query.ne(pad_idx).unsqueeze(2)  # (n_batch, query_seq_len, 1)
@@ -256,35 +257,6 @@ class MyCustomTransformerModel(nn.Module):
         mask = key_mask & query_mask
         mask.requires_grad = False
         return mask  # output shape: (n_batch, query_seq_len, key_seq_len)
-
-    # def make_pad_mask(self, query, key, pad_value=0, dim_check=False):
-    #     """
-    #     This pad masking is used when the query and key are already embedded
-    #     """
-    #     # query: (n_batch, query_seq_len, d_embed)
-    #     # key: (n_batch, key_seq_len, d_embed)
-    #     # pad_value: the value that is used to pad the sequence TODO: Check what value you want to use (0, 1, or else)
-    #
-    #     # Check if the query and key have the dimensionality we want
-    #     if dim_check:
-    #         assert len(query.shape) == 3, "query tensor must be 3-dimensional"
-    #         assert len(key.shape) == 3, "key tensor must be 3-dimensional"
-    #         assert query.shape[0] == key.shape[0], "query and key batch sizes must be the same"
-    #         assert query.shape[2] == key.shape[2], "query and key embedding sizes must be the same"
-    #
-    #     # Get the query and key sequence lengths
-    #     query_seq_len, key_seq_len = query.size(1), key.size(1)
-    #
-    #     # create mask where the whole vector equals to pad_value
-    #     key_mask = (key != pad_value).any(dim=-1).unsqueeze(1).unsqueeze(2)  # (n_batch, 1, 1, key_seq_len)
-    #     key_mask = key_mask.repeat(1, 1, query_seq_len, 1)  # (n_batch, 1, query_seq_len, key_seq_len)
-    #
-    #     query_mask = (query != pad_value).any(dim=-1).unsqueeze(1).unsqueeze(3)  # (n_batch, 1, query_seq_len, 1)
-    #     query_mask = query_mask.repeat(1, 1, 1, key_seq_len)  # (n_batch, 1, query_seq_len, key_seq_len)
-    #
-    #     mask = key_mask & query_mask
-    #     mask.requires_grad = False
-    #     return mask
 
     # def make_subsequent_mask(self, query, key):
     #     query_seq_len, key_seq_len = query.size(1), key.size(1)
@@ -295,10 +267,6 @@ class MyCustomTransformerModel(nn.Module):
 
 
 class MyCustomRLlibModel(TorchModelV2, nn.Module):
-    # TODO: (1) Get right dimensions for the model from the obs_space
-    # TODO: (2) Get the right dimensions for the model from the action_space (generator part)
-    # TODO: (4) Check the vals: d_k, d_model, d_embed, h, d_ff, n_layer
-    # TODO: (5) Modify the decoder to compute the attention we want
     def __init__(self,
                  obs_space,
                  action_space,
@@ -309,9 +277,7 @@ class MyCustomRLlibModel(TorchModelV2, nn.Module):
         TorchModelV2.__init__(self, obs_space, action_space, num_outputs, model_config, name)
         nn.Module.__init__(self)
 
-        # tgt_vocab_size = 100
-        # device = torch.device("cpu")  # RLlib takes care of device placement
-        # max_len = 256
+        # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         d_subobs = 2  # dimension of the input tokens!
         d_embed_input = 128
@@ -319,7 +285,7 @@ class MyCustomRLlibModel(TorchModelV2, nn.Module):
         d_model = 128  # dimension of model (:=d_k * h);
         # d_model_decoder = 128
         # TODO: Would you define d_model_decoder as well? Consider [d_embed_query]==(3*d_embed_input)==(d_embed_context)
-        n_layer_encoder = 6
+        n_layer_encoder = 3
         n_layer_decoder = 1
         h = 8  # number of heads
         d_ff = 512  # dimension of feed forward; usually 2-4 times d_model
@@ -328,23 +294,6 @@ class MyCustomRLlibModel(TorchModelV2, nn.Module):
         norm_eps = 1e-5  # epsilon parameter of layer normalization  # TODO: Check if this value works fine
 
         dpcopy = copy.deepcopy  # TODO: Would you kindly improve the readability?
-
-        # tgt_token_embed = TokenEmbedding(
-        #     d_embed=d_embed,
-        #     vocab_size=tgt_vocab_size)
-        # pos_embed = PositionalEncoding(
-        #     d_embed=d_embed,
-        #     max_len=max_len,
-        #     # device=device
-        # )
-        # src_embed = TransformerEmbedding(
-        #     token_embed=src_token_embed,
-        #     pos_embed=copy(pos_embed),
-        #     dr_rate=dr_rate)
-        # tgt_embed = TransformerEmbedding(
-        #     token_embed=tgt_token_embed,
-        #     pos_embed=copy(pos_embed),
-        #     dr_rate=dr_rate)
 
         # Module Level: Encoder
         # Need an embedding layer for the input; 2->128 in the case of Kool2019
@@ -376,7 +325,7 @@ class MyCustomRLlibModel(TorchModelV2, nn.Module):
         #     fc1=nn.Linear(d_embed_context, d_ff),
         #     fc2=nn.Linear(d_ff, d_embed_context),
         #     dr_rate=dr_rate)
-        norm_decoder = nn.LayerNorm(d_embed_context, eps=norm_eps)
+        # norm_decoder = nn.LayerNorm(d_embed_context, eps=norm_eps)
 
         # Block Level
         encoder_block = EncoderBlock(
@@ -388,8 +337,10 @@ class MyCustomRLlibModel(TorchModelV2, nn.Module):
             self_attention=None,  # No self-attention in the decoder in this case!
             cross_attention=dpcopy(attention_decoder),
             position_ff=None,  # No position-wise FFN in the decoder in this case!
-            norm=dpcopy(norm_decoder),
-            dr_rate=dr_rate)
+            # norm=dpcopy(norm_decoder),
+            norm=nn.Identity(),
+            dr_rate=dr_rate,
+            efficient=True)
 
         # Transformer Level (Encoder + Decoder)
         encoder = Encoder(
@@ -400,7 +351,7 @@ class MyCustomRLlibModel(TorchModelV2, nn.Module):
             decoder_block=decoder_block,
             n_layer=n_layer_decoder,
             # norm=dpcopy(norm_decoder),)
-            norm=None,)  # TODO: Decide whether to include norm in the decoder!! you can pass None if not needed
+            norm=nn.Identity(),)
         action_size = action_space.n  # it gives n given that action_space is Discrete(n).
         generator = PointerProbGenerator(
             d_model=d_model,
@@ -410,21 +361,28 @@ class MyCustomRLlibModel(TorchModelV2, nn.Module):
             dr_rate=dr_rate,
         )  # outputs a probability distribution over the input sequence
 
-        # Initialize state
-        # self.state
-
         # Define the actor
         self.policy_net = MyCustomTransformerModel(
             src_embed=input_embed,
             # tgt_embed=tgt_embed,
             encoder=encoder,
             decoder=decoder,
-            generator=generator
-        )
+            generator=generator,)
         # Define the critic layer
+        # self.value_net = MyCustomTransformerModel(
+        #     src_embed= dpcopy(input_embed),
+        #     # tgt_embed=tgt_embed,
+        #     encoder=dpcopy(encoder),
+        #     decoder=decoder,
+        #     generator=generator,)
         self.values = None
-        num_actions = action_space.n
-        self.value_net = nn.Linear(num_actions, 1)
+        # num_actions = action_space.n
+        # self.value_layer = nn.Linear(num_actions, 1)
+        self.value_branch = nn.Sequential(
+            nn.Linear(d_embed_context, d_embed_context),
+            nn.ReLU(),
+            nn.Linear(d_embed_context, 1),
+        )
 
     def forward(self, input_dict, state, seq_lens):
         """
@@ -435,6 +393,9 @@ class MyCustomRLlibModel(TorchModelV2, nn.Module):
         """
         x = input_dict["obs"]
 
+        # device = x["pad_tokens"].device
+        # print(f"Device: {device}")
+
         # Check if the data type of the pad tokens is torch's int32; if not, output a warning and convert it to int32
         # temp_token = x["pad_tokens"][0][0]
         # if temp_token.dtype != torch.int32:
@@ -442,13 +403,15 @@ class MyCustomRLlibModel(TorchModelV2, nn.Module):
         #     for _ in range(10): print("The data type of the pad tokens was: ", type(temp_token))
         #     x["pad_tokens"] = x["pad_tokens"].type(torch.int32)
 
-        x, _ = self.policy_net(x)  # x: logits
-        self.values = x
+        # x: (batch_size, num_task_max)
+        # h_c_N1: (batch_size, 1, d_embed_context)
+        x, h_c_N1 = self.policy_net(x)  # x: logits; RLlib expects raw logits, NOT softmax probabilities TODO
+        self.values = h_c_N1.squeeze(1)  # self.values: (batch_size, d_embed_context)
         # Do the rest of the forward pass here, if necessary
 
         return x, state
 
     def value_function(self):
-        # return torch.mean(self.value_net(self.values))
-        return self.value_net(self.values).squeeze(-1)
+        out = self.value_branch(self.values).squeeze(-1)  # out: (batch_size,)
+        return out
 
