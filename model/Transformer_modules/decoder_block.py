@@ -86,7 +86,7 @@ class ProbablyAlmostUniversalDecoderBlockLol(nn.Module):  # Maybe act as a unive
         # tgt_mask: (batch_size, tgt_seq_len, tgt_seq_len); may vary; check your self-attention layer's input shape
         # src_tgt_mask: (batch_size, tgt_seq_len, src_seq_len)
 
-        # 1. Please process your input to the self-attention layer
+        # 1. Please preprocess your input to the self-attention layer if necessary
         # [Example implementation] Compute the mean of encoder_out along the sequence length dimension
         # avg_enc_out shape: (batch_size, 1, d_model)
         avg_enc_out = torch.mean(encoder_out, dim=1, keepdim=True)

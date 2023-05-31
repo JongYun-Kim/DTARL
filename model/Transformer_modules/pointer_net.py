@@ -34,6 +34,7 @@ class PointerProbGenerator(nn.Module):
         # query:  (n_batch, seq_len_query, d_model) - Batch of query vectors
         # key:    (n_batch, seq_len_key,   d_model) - Batch of key vectors
         # mask:   (n_batch, seq_len_query, seq_len_key) - Mask tensor
+        batch_size = query.size(0)  # Get the batch size; TODO remove it
 
         d_k = key.shape[-1]  # Get the last dimension of the key
         attention_score = torch.matmul(query, key.transpose(-2, -1))  # Calculate the dot product: (Q x K^T)
@@ -43,6 +44,8 @@ class PointerProbGenerator(nn.Module):
             attention_score = attention_score.masked_fill(mask == 0, -1e9)  # Apply the mask to the attention scores
         attention_prob = F.softmax(attention_score, dim=-1)  # Apply softmax to get the attention probabilities
         attention_prob = self.dropout(attention_prob)  # Apply dropout
+        # if batch_size != 1:
+        #     print("batch_size != 1")
         return attention_prob  # (n_batch, seq_len_query, seq_len_key) - The attention probabilities
 
     def forward(self, *args, query, key, mask=None):
