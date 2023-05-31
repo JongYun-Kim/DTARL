@@ -78,26 +78,54 @@ class MyCustomTransformerModel(nn.Module):
     # def decode_outdated(self, tgt, encoder_out, tgt_mask, src_tgt_mask):
     #     return self.decoder(self.tgt_embed(tgt), encoder_out, tgt_mask, src_tgt_mask)
 
-    def encode(self, src_dict, src_mask):
-        src = src_dict["task_embeddings"]
-        src = self.src_embed(src)
-        return self.encoder(src, src_mask)
-        # return self.encoder(self.src_embed(src), src_mask)
+    def encode(self, src, src_mask):
+        # src: (batch_size, num_task==seq_len, d_embed)
+        # src_mask: (batch_size, seq_len_src, seq_len_src)
+        return self.encoder(self.src_embed(src), src_mask)
 
     def decode(self, tgt, encoder_out, tgt_mask, src_tgt_mask):
+        # tgt: (batch_size, seq_len_tgt==1, d_embed_context)
+        # encoder_out: (batch_size, seq_len_src, d_embed
         return self.decoder(tgt, encoder_out, tgt_mask, src_tgt_mask)
         # return self.decoder(self.tgt_embed(tgt), encoder_out, tgt_mask, src_tgt_mask)
 
-    def get_context_node(self, obs, prev_action, first_action):
-        # obs: shape (batch_size, num_task, data_size)
+    def get_context_node(self, obs, prev_action, first_action, pad_tokens, use_obs_mask=True, debug=False):
+        # obs: shape (batch_size, num_task_max, data_size)
         # prev_action: shape (batch_size,)
         # first_action: shape (batch_size,)
 
-        # Calculate batch_size, num_task, data_size from obs
-        batch_size, num_task, data_size = obs.shape
+        # TODO: Should we use a mask not to consider the padded observations in the obs_avg computation?
+        #       I think so?
+        #       ... This has been added with use_obs_mask but you need to test it.
+        #       ... And to improve the efficiency of it.
 
-        # Compute the average observation: shape (batch_size, 1, data_size)
-        obs_avg = torch.mean(obs, dim=1, keepdim=True)
+        # Calculate batch_size, num_task, data_size from obs
+        batch_size, num_task_max, data_size = obs.shape
+
+        if use_obs_mask:
+            # Expand the dimensions of pad_tokens to match the shape of obs
+            mask = pad_tokens.unsqueeze(-1).expand_as(obs)  # shape (batch_size, num_task_max, data_size)
+
+            # Replace masked values with zero for the average computation
+            obs_masked = torch.where(mask == 1, obs, torch.zeros_like(obs))  # shape (batch_size, num_task_max, data_size)
+
+            # Compute the sum and count non-zero elements
+            obs_sum = torch.sum(obs_masked, dim=1, keepdim=True)  # shape (batch_size, 1, data_size)
+            obs_count = torch.sum((mask == 0), dim=1, keepdim=True).float()
+
+            # if batch_size != 1:
+            #     print("batch_size != 1")
+
+            # Check if there is any sample where all tasks are padded
+            if debug:
+                if torch.any(obs_count == 0):
+                    raise ValueError("All tasks are padded in at least one sample.")
+
+            # Compute the average observation, only for non-masked elements
+            obs_avg = obs_sum / obs_count
+        else:
+            # Compute the average observation: shape (batch_size, 1, data_size)
+            obs_avg = torch.mean(obs, dim=1, keepdim=True)  # num_task_max dim is reduced
 
         # Initializing h_first and h_last with zeros: shape (batch_size, 1, data_size)
         h_first = torch.zeros(batch_size, 1, data_size)
@@ -138,20 +166,15 @@ class MyCustomTransformerModel(nn.Module):
         return h_c
 
     def forward(self,
-                src_dict,  # shape: (batch_size, src_seq_len, d_embed)  # already padded and embedded
-                # tgt,  # shape: (batch_size,)  # They are previous actions
+                src_dict,  # shape["task_embeddings"]: (batch_size, src_seq_len, d_embed); already padded & embedded
+                # tgt,  # shape: (batch_size,)  # They are previous actions <-- This is not used
                 # src_pad_tokens,  # shape: (batch_size, src_seq_len)
                 # tgt_pad_tokens,  # shape: (batch_size, tgt_seq_len)
                 ):
-        # Please keep in mind that here sequence is
-        # What is src mask?
-        # This is the mask that is used in the encoder to mask the padding tokens in the MultiHeadAttentionLayer
-        # It does not mask
-
         # Prepare tokens for mask generations and context node
         # TODO: Check dims of the following tensors;
-        #       See the dims of Box(shape=()), Box(shape=(1,)), Discrete(n)
-        pad_tokens = src_dict["pad_tokens"]
+        #       See the dims of Box(shape=()), Box(shape=(1,)), Discrete(n);
+        pad_tokens = src_dict["pad_tokens"]  # shape: (batch_size, seq_len_src==num_task_max)
         action_tokens = src_dict["completion_tokens"]
         context_token = torch.zeros_like(pad_tokens[:, 0])  # represents the context vector h_c (Never padded, val==0)
         context_token = context_token.unsqueeze(1)  # shape: (batch_size, 1)
@@ -160,22 +183,25 @@ class MyCustomTransformerModel(nn.Module):
 
         # Encoder mask
         src_mask_pad = self.make_src_mask(pad_tokens)
-        src_mask = src_mask_pad
+        src_mask = src_mask_pad  # shape: (batch_size, seq_len_src, seq_len_src); Be careful: head dimension removed!!
 
         # Decoder masks
         # tgt_mask: shape: (batch_size, seq_len_tgt, seq_len_tgt); used for self-attention in the decoder
-        # src_tgt_mask: shape: (batch_size, seq_len_tgt, seq_len_src); used for cross-attention in the decoder
-        tgt_mask = None
+        tgt_mask = None  # tgt_mask is not used in the current implementation
         src_tgt_submask_pad = self.make_src_tgt_mask(pad_tokens, context_token)  # query is the context vector; ...
         src_tgt_submask_action = self.make_src_tgt_mask(action_tokens, context_token)
+        # src_tgt_mask: shape: (batch_size, seq_len_tgt, seq_len_src); used for cross-attention in the decoder
         src_tgt_mask = src_tgt_submask_pad & src_tgt_submask_action
 
         # Encoder
         # encoder_out: shape: (batch_size, src_seq_len, d_embed)
-        encoder_out = self.encode(src_dict, src_mask.unsqueeze(1))  # a set of task embeddings; permutation invariant
+        # a set of task embeddings encoded; permutation invariant
+        # unsqueeze(1) has been applied to src_mask to add head dimension for broadcasting in multi-head attention
+        encoder_out = self.encode(src_dict["task_embeddings"], src_mask.unsqueeze(1))
         # get the context vector
         # h_c_N: shape: (batch_size, 1, d_embed_context);  d_embed_context == 3 * d_embed
-        h_c_N = self.get_context_node(obs=encoder_out, prev_action=prev_actions, first_action=first_actions)
+        h_c_N = self.get_context_node(obs=encoder_out,
+                                      prev_action=prev_actions, first_action=first_actions, pad_tokens=pad_tokens)
         # decoder_out: (batch_size, tgt_seq_len, d_embed_context)
         # tgt_seq_len == 1 in our case
         decoder_out = self.decode(h_c_N, encoder_out, tgt_mask, src_tgt_mask.unsqueeze(1))  # h_c^(N+1)
