@@ -10,7 +10,11 @@ class SingleStaticEnv(gym.Env):
         super(SingleStaticEnv, self).__init__()
 
         # Task number information
-        self.num_task_max = config["num_task_max"]  # maximum number of tasks for padding of the observation
+        if "num_task_max" in config:
+            self.num_task_max = config["num_task_max"]  # maximum number of tasks for padding of the observation
+        else:
+            raise ValueError("num_task_max must be specified in the config")
+        self.num_task_min = config["num_task_min"] if "num_task_min" in config else 1  # minimum number of tasks
         self.num_task = None  # current number of tasks
 
         # Observation space
@@ -31,6 +35,7 @@ class SingleStaticEnv(gym.Env):
                                        # TODO: MUST:: Can I get prev_action not in an array but in a single value?
                                        #             if you want to amend the form, you may want to make a change in
                                        #             the model accordingly!! (applying squeeze(!!) the val in the model)
+                                       #             OR, perhaps, scalar is better as it doesn't require squeeze.
                                        "first_action": Box(low=-1, high=self.num_task_max-1, shape=(1,), dtype=np.int32),
                                        # "time_decision": Discrete(self.num_task_max+1),
                                        # "real_clock": Box(low=0, high=np.inf, shape=(1,)),
@@ -61,7 +66,7 @@ class SingleStaticEnv(gym.Env):
         # self.real_clock = 0.0  # Box(low=0, high=np.inf, shape=(1,))
 
         # Generate positions of the tasks and the robot
-        self.num_task = np.random.randint(low=1, high=self.num_task_max+1)
+        self.num_task = np.random.randint(low=self.num_task_min, high=self.num_task_max+1)
         self.robot_position = np.random.uniform(low=-0.5, high=0.5, size=(2,))
         self.task_positions = np.random.uniform(low=-0.5, high=0.5, size=(self.num_task, 2))
         # Task embeddings are relative positions of the tasks from the robot
