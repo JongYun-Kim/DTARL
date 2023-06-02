@@ -197,11 +197,13 @@ class MyCustomTransformerModel(nn.Module):
         # src_tgt_mask: shape: (batch_size, seq_len_tgt, seq_len_src); used for cross-attention in the decoder
         src_tgt_mask = src_tgt_submask_pad & src_tgt_submask_action
 
-        # Encoder
+        # ENCODER
         # encoder_out: shape: (batch_size, src_seq_len, d_embed)
         # a set of task embeddings encoded; permutation invariant
         # unsqueeze(1) has been applied to src_mask to add head dimension for broadcasting in multi-head attention
         encoder_out = self.encode(src_dict["task_embeddings"], src_mask.unsqueeze(1))
+
+        # DECODER
         # get the context vector
         # h_c_N: shape: (batch_size, 1, d_embed_context);  d_embed_context == 3 * d_embed
         h_c_N = self.get_context_node(obs=encoder_out,
@@ -212,9 +214,10 @@ class MyCustomTransformerModel(nn.Module):
         # Generator: query==decoder_out; key==encoder_out; return==logits
         # out: (batch_size, 1, seq_len_src==num_task_max)
         out = self.generator(query=decoder_out, key=encoder_out, mask=src_tgt_mask)
-        # assert out.shape[1] == 1  # TODO: Remove it later once the model is stable
+        # assert out.shape[1] == 1  # TODO: Remove it later once the model runs stable
         # Get the logits
         out = out.squeeze(1)
+
         # out: (batch_size, src_seq_len) == (batch_size, n_actions) == (batch_size, num_task_max)
         return out, decoder_out
 
@@ -278,6 +281,7 @@ class MyCustomRLlibModel(TorchModelV2, nn.Module):
         nn.Module.__init__(self)
 
         # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        # self.device = device
 
         d_subobs = 2  # dimension of the input tokens!
         d_embed_input = 128
@@ -292,8 +296,6 @@ class MyCustomRLlibModel(TorchModelV2, nn.Module):
         clip_in_generator = 10
         dr_rate = 0  # dropout rate; 0 in our case as we use reinforcement learning... Or may not?
         norm_eps = 1e-5  # epsilon parameter of layer normalization  # TODO: Check if this value works fine
-
-        dpcopy = copy.deepcopy  # TODO: Would you kindly improve the readability?
 
         # Module Level: Encoder
         # Need an embedding layer for the input; 2->128 in the case of Kool2019
@@ -329,15 +331,16 @@ class MyCustomRLlibModel(TorchModelV2, nn.Module):
 
         # Block Level
         encoder_block = EncoderBlock(
-            self_attention=dpcopy(attention_encoder),  # TODO: Can remove dpcopy; the block is deep-copied in Encoder
-            position_ff=dpcopy(position_ff_encoder),
-            norm=dpcopy(norm_encoder),
+            self_attention=copy.deepcopy(attention_encoder),
+            # TODO: Can remove deepcopy; the block is deep-copied in Encoder
+            position_ff=copy.deepcopy(position_ff_encoder),
+            norm=copy.deepcopy(norm_encoder),
             dr_rate=dr_rate)
         decoder_block = DecoderBlock(
             self_attention=None,  # No self-attention in the decoder in this case!
-            cross_attention=dpcopy(attention_decoder),
+            cross_attention=copy.deepcopy(attention_decoder),
             position_ff=None,  # No position-wise FFN in the decoder in this case!
-            # norm=dpcopy(norm_decoder),
+            # norm=copy.deepcopy(norm_decoder),
             norm=nn.Identity(),
             dr_rate=dr_rate,
             efficient=True)
@@ -346,11 +349,11 @@ class MyCustomRLlibModel(TorchModelV2, nn.Module):
         encoder = Encoder(
             encoder_block=encoder_block,
             n_layer=n_layer_encoder,
-            norm=dpcopy(norm_encoder))
+            norm=copy.deepcopy(norm_encoder))
         decoder = Decoder(
             decoder_block=decoder_block,
             n_layer=n_layer_decoder,
-            # norm=dpcopy(norm_decoder),)
+            # norm=copy.deepcopy(norm_decoder),)
             norm=nn.Identity(),)
         action_size = action_space.n  # it gives n given that action_space is Discrete(n).
         generator = PointerProbGenerator(
@@ -370,9 +373,9 @@ class MyCustomRLlibModel(TorchModelV2, nn.Module):
             generator=generator,)
         # Define the critic layer
         # self.value_net = MyCustomTransformerModel(
-        #     src_embed= dpcopy(input_embed),
+        #     src_embed= copy.deepcopy(input_embed),
         #     # tgt_embed=tgt_embed,
-        #     encoder=dpcopy(encoder),
+        #     encoder=copy.deepcopy(encoder),
         #     decoder=decoder,
         #     generator=generator,)
         self.values = None
@@ -393,9 +396,6 @@ class MyCustomRLlibModel(TorchModelV2, nn.Module):
         """
         x = input_dict["obs"]
 
-        # device = x["pad_tokens"].device
-        # print(f"Device: {device}")
-
         # Check if the data type of the pad tokens is torch's int32; if not, output a warning and convert it to int32
         # temp_token = x["pad_tokens"][0][0]
         # if temp_token.dtype != torch.int32:
@@ -405,7 +405,7 @@ class MyCustomRLlibModel(TorchModelV2, nn.Module):
 
         # x: (batch_size, num_task_max)
         # h_c_N1: (batch_size, 1, d_embed_context)
-        x, h_c_N1 = self.policy_net(x)  # x: logits; RLlib expects raw logits, NOT softmax probabilities TODO
+        x, h_c_N1 = self.policy_net(x)  # x: logits; RLlib expects raw logits, NOT softmax probabilities
         self.values = h_c_N1.squeeze(1)  # self.values: (batch_size, d_embed_context)
         # Do the rest of the forward pass here, if necessary
 
