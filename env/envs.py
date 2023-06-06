@@ -1,7 +1,8 @@
 import numpy as np
 import gym
 from gym.spaces import Box, Discrete, Dict, MultiDiscrete
-# import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt
+import copy
 
 
 class SingleStaticEnv(gym.Env):
@@ -35,7 +36,8 @@ class SingleStaticEnv(gym.Env):
                                        # TODO: MUST:: Can I get prev_action not in an array but in a single value?
                                        #             if you want to amend the form, you may want to make a change in
                                        #             the model accordingly!! (applying squeeze(!!) the val in the model)
-                                       #             OR, perhaps, scalar is better as it doesn't require squeeze.
+                                       #             OR, perhaps, scalar is better as it doesn't require squeeze, which
+                                       #             may reduce the computation time in the model
                                        "first_action": Box(low=-1, high=self.num_task_max-1, shape=(1,), dtype=np.int32),
                                        # "time_decision": Discrete(self.num_task_max+1),
                                        # "real_clock": Box(low=0, high=np.inf, shape=(1,)),
@@ -90,7 +92,7 @@ class SingleStaticEnv(gym.Env):
         return obs
 
     def get_observation(self):
-        obs = self.dummy_observation.copy()  # TODO: Is there a better way?
+        obs = self.dummy_observation.copy()  # TODO: Is there a better way? (empty dict?)
         obs["task_embeddings"] = self.task_embeddings
         # obs["num_task"] = self.num_task
         obs["pad_tokens"] = self.is_padded
@@ -114,7 +116,9 @@ class SingleStaticEnv(gym.Env):
         # Check if the action is valid
         # if action < 0 or action >= self.num_task:
         #     raise ValueError(f"Invalid action: {action} is not in [0, {self.num_task})")
-        if action >= self.num_task:  # TODO: YOU MUST REMOVE THIS; JUST FOR DEBUGGING
+        if isinstance(action, tuple):
+            action = action[0]
+        if action >= self.num_task:  # TODO: YOU SHOULD REMOVE THIS FOR BEST PERF; JUST FOR DEBUGGING
             print(f"Invalid action: {action} is not in [0, {self.num_task})")
             action = np.random.randint(low=0, high=self.num_task)
             print(f"    Now, randomly selected action: {action}")
@@ -157,20 +161,84 @@ class SingleStaticEnv(gym.Env):
         return obs, reward, done, {}
 
     def render(self, mode='human'):
-        pass
-    #     if mode == 'human':
-    #         plt.figure(figsize=(6, 6))
-    #
-    #         # Plot the robot position
-    #         plt.scatter(self.robot_position[0], self.robot_position[1], c='r', marker='o', s=200, label='Robot')
-    #
-    #         # Plot the tasks
-    #         for i, task_position in enumerate(self.task_positions):
-    #             color = 'g' if self.is_completed[i] == 0 else 'b'  # Uncompleted tasks are green, completed are blue
-    #             plt.scatter(task_position[0], task_position[1], c=color, marker='x', s=100, label=f'Task {i + 1}')
-    #
-    #         plt.xlim(-1, 1)
-    #         plt.ylim(-1, 1)
-    #         plt.grid(True)
-    #         plt.legend()
-    #         plt.show()
+        # pass
+        if mode == 'human':
+            plt.figure(figsize=(6, 6))
+
+            # Plot the robot position
+            plt.scatter(self.robot_position[0], self.robot_position[1], c='r', marker='o', s=200, label='Robot')
+
+            # Plot the tasks
+            for i, task_position in enumerate(self.task_positions):
+                color = 'g' if self.is_completed[i] == 0 else 'b'  # Uncompleted tasks are green, completed are blue
+                plt.scatter(task_position[0], task_position[1], c=color, marker='x', s=100, label=f'Task {i + 1}')
+
+            plt.xlim(-0.5, 0.5)
+            plt.ylim(-0.5, 0.5)
+            plt.grid(True)
+            plt.legend()
+            plt.show()
+
+
+class GreedyPolicy:
+    def __init__(self, initial_observation=None):
+        self.observation = None
+        self.num_task = None
+        self.action_history = None
+        self.reward_history = None
+        self.decision_count = None
+
+        if initial_observation is not None:
+            self.reset(initial_observation)
+        else:
+            print("Warning: GreedyPolicy is initialized without initial_observation")
+            print("         You must call reset() before using this policy")
+
+    def reset(self, initial_observation):
+        self.observation = copy.deepcopy(initial_observation)
+        self.num_task = np.sum(self.observation["pad_tokens"] == 0)  # The number of tasks
+        self.action_history = np.empty(shape=(self.num_task,), dtype=np.int32)  # Warning: np.empty() returns random arr
+        self.reward_history = np.empty(shape=(self.num_task,), dtype=np.float32)
+        self.decision_count = 0
+
+    def calculate_policy(self):
+        # Get initial information from observation
+        task_embeddings = self.observation["task_embeddings"].copy()  # TODO: copy() may not be necessary
+        is_completed = self.observation["completion_tokens"].copy()
+        is_padded = self.observation["pad_tokens"].copy()
+
+        # Iterate until all tasks are completed
+        while not all(is_completed) and not all(is_completed[is_padded == 0]):
+            # Calculate distances to tasks, and replace distances to completed or padded tasks with infinity
+            distances = np.linalg.norm(task_embeddings, axis=1)
+            distances[is_completed == 1] = np.inf
+            distances[is_padded == 1] = np.inf
+
+            # Find the closest task
+            action = np.argmin(distances)
+            reward = -distances[action] / self.num_task  # Normalize the reward with the number of tasks
+
+            # Update the task_embeddings to reflect the robot's new position
+            task_embeddings -= task_embeddings[action]
+
+            # Mark this task as completed
+            is_completed[action] = 1
+
+            # Store the action and reward
+            self.action_history[self.decision_count] = action
+            self.reward_history[self.decision_count] = reward
+            self.decision_count += 1
+
+    def get_total_travelled_distance(self):
+        # The total travelled distance is the sum of the negative rewards
+        return np.sum(self.reward_history)
+
+    def get_action_history(self):
+        # The action history is the order in which the tasks were completed
+        return self.action_history
+
+    def get_reward_history(self):
+        # The reward history is the negative distance travelled to each task
+        return self.reward_history
+
+
