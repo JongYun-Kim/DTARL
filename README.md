@@ -9,7 +9,7 @@
 ### Runnables
 
 ## TODO
-- [ ] Static Env
+- [x] Static Env
 - [ ] Dynamic Env
 - [ ] Multi-robot Env/training
 - [ ] Better alignment
