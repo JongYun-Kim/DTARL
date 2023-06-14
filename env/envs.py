@@ -130,8 +130,12 @@ class SingleStaticEnv(gym.Env):
         reward = -np.linalg.norm(self.robot_position - self.task_positions[action, :])
         # Normalize the reward by the number of tasks and outputs error if the num_task is 0
         # reward /= 2.0  # tasks were generated in [-1, 1] x [-1, 1]; make it equivalent to the unit square case
-        # TODO: We may have to normalize the reward by the current num_task; done for now... but
+        # TODO: Check which reward you want to use.
+        #       (1) dist: the (mag of) rewards is larger when num_task is larger
+        #       (2) dist / sqrt(num_task): the (mag of) rewards will be uniformly distributed over the num_task
+        #       (3) dist / num_task: the (mag of) rewards is larger when num_task is smaller
         reward /= self.num_task  # self.num_task will never be 0; if you amend the code, you may want to assert this
+        # reward /= np.sqrt(self.num_task)  # Euclidean shortest path grows approximately proportional to sqrt(num_task)
         # Update the robot position
         self.robot_position = self.task_positions[action, :]
         # Update the task embeddings
@@ -160,10 +164,12 @@ class SingleStaticEnv(gym.Env):
 
         return obs, reward, done, {}
 
-    def render(self, mode='human'):
-        # pass
+    def render(self, action_probs=None, mode='human'):
+        # action_prob: a torch tensor (or a numpy array) of shape (self.num_task_max,); if None, no action_prob is shown
+        # But we should only consider the first self.num_task elements of action_prob
+
         if mode == 'human':
-            plt.figure(figsize=(6, 6))
+            plt.figure(figsize=(8, 6))
 
             # Plot the robot position
             plt.scatter(self.robot_position[0], self.robot_position[1], c='r', marker='o', s=200, label='Robot')
@@ -173,10 +179,25 @@ class SingleStaticEnv(gym.Env):
                 color = 'g' if self.is_completed[i] == 0 else 'b'  # Uncompleted tasks are green, completed are blue
                 plt.scatter(task_position[0], task_position[1], c=color, marker='x', s=100, label=f'Task {i + 1}')
 
-            plt.xlim(-0.5, 0.5)
+                # If action probabilities are provided, plot them as horizontal bars
+                if action_probs is not None:
+                    # Normalize the action probability for visualization purposes
+                    # normalized_action_prob = action_probs[i].item() / action_probs.max().item()
+                    normalized_action_prob = action_probs[i].item() / 5.0
+                    plt.barh(task_position[1], normalized_action_prob, left=task_position[0], height=0.01, color='b')
+
+            plt.xlim(-0.6, 0.6)
             plt.ylim(-0.5, 0.5)
             plt.grid(True)
-            plt.legend()
+            plt.legend(bbox_to_anchor=(1.04, 1), loc='upper left')  # Place the legend outside of the plot
+            # plt.legend()
+
+            # plt.tight_layout()
+            # Set equal scaling (i.e., make circles circular) by changing dimensions of the plot box.
+            # plt.axis('equal', adjustable='box')
+            plt.gca().set_aspect('equal', adjustable='box')
+            plt.subplots_adjust(right=0.8)  # adjust the right boundary of the plot to make room for the legend
+
             plt.show()
 
 
