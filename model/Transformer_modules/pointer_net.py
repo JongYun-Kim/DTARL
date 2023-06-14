@@ -63,3 +63,21 @@ class PointerProbGenerator(nn.Module):
 
         return attention_score  # (n_batch, seq_len_query, seq_len_key) - The attention probabilities
 
+
+class PointerPlaceholder(nn.Module):
+    def __init__(self):
+        super(PointerPlaceholder, self).__init__()
+
+    def forward(self, *args, query, key, mask=None):
+        # Assuming that the desired output shape is the same as that of the original module
+        batch_size = query.size(0)
+        seq_len_query = query.size(1)
+        seq_len_key = key.size(1)
+
+        # Create a tensor of zeros with the same shape as the original output
+        out = torch.zeros(batch_size, seq_len_query, seq_len_key)
+
+        # This placeholder function assumes that your model will work correctly with this output.
+        # If your model needs different default values or behaviors, you'll have to adjust this.
+        return out
+

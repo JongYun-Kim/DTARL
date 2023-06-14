@@ -28,7 +28,7 @@ class MultiHeadAttentionLayer(nn.Module):
     def calculate_attention(self, query, key, value, mask):
         # query:      (n_batch, h, seq_len_query, d_k)
         # key, value: (n_batch, h, seq_len_key,   d_k)
-        # mask: (n_batch, 1, seq_len_query, seq_len_key)???  # TODO: Dimension (n_batch, seq_len_query, seq_len_key)???
+        # mask: (n_batch, 1, seq_len_query, seq_len_key)???  # TODO: Dim: (n_batch, seq_len_query, seq_len_key)???
         d_k = key.shape[-1]
         attention_score = torch.matmul(query, key.transpose(-2, -1))  # Q x K^T
         attention_score = attention_score / math.sqrt(d_k)   # (n_batch, h, seq_len_query, seq_len_key)
@@ -37,7 +37,7 @@ class MultiHeadAttentionLayer(nn.Module):
         attention_prob = F.softmax(attention_score, dim=-1)  # (n_batch, h, seq_len_query, seq_len_key)
         attention_prob = self.dropout(attention_prob)
         out = torch.matmul(attention_prob, value)  # TODO: check if this is correct, dimension-wise
-        return out  # (n_batch, h, query_seq_len, d_k)
+        return out  # (n_batch, h, seq_len_query, d_k)
 
     def forward(self, *args, query, key, value, mask=None):
         # query:      (n_batch, seq_len_query, d_embed_query)
@@ -56,12 +56,12 @@ class MultiHeadAttentionLayer(nn.Module):
         key = transform(key, self.k_fc)      # (n_batch, h, seq_len_key,   d_k)
         value = transform(value, self.v_fc)  # (n_batch, h, seq_len_key,   d_k)
 
-        out = self.calculate_attention(query, key, value, mask)  # (n_batch, h, query_seq_len, d_k)
-        out = out.transpose(1, 2)                                # (n_batch, query_seq_len, h, d_k)
-        out = out.contiguous().view(n_batch, -1, self.d_model)   # (n_batch, query_seq_len, d_model)
+        out = self.calculate_attention(query, key, value, mask)  # (n_batch, h,             seq_len_query,  d_k)
+        out = out.transpose(1, 2)                                # (n_batch, seq_len_query, h,              d_k)
+        out = out.contiguous().view(n_batch, -1, self.d_model)   # (n_batch, seq_len_query, d_model)
         out = self.out_fc(out)
 
-        return out  # (n_batch, query_seq_len, d_embed_MHA_out); d_embed_MHA_out == d_embed_query in most cases.
+        return out  # (n_batch, seq_len_query, d_embed_MHA_out); d_embed_MHA_out == d_embed_query in most cases.
 
     # def get_attention_score(self, query, key, mask=None):
     #     # query:      (n_batch, seq_len_query, d_embed_query)
