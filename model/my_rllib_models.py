@@ -28,7 +28,15 @@ from model.Transformer_modules.encoder_block import EncoderBlock
 from model.Transformer_modules.decoder_block import CustomDecoderBlock as DecoderBlock
 from model.Transformer_modules.encoder import Encoder
 from model.Transformer_modules.decoder import Decoder
-from model.Transformer_modules.pointer_net import PointerProbGenerator
+from model.Transformer_modules.pointer_net import PointerProbGenerator, PointerPlaceholder
+
+# For NN Model
+from ray.rllib.models.preprocessors import get_preprocessor
+from ray.rllib.models.torch.misc import SlimFC, normc_initializer
+from ray.rllib.models.modelv2 import ModelV2
+from ray.rllib.utils.annotations import override, DeveloperAPI
+from ray.rllib.utils.torch_utils import FLOAT_MIN
+
 
 # TODO (1): [o] Create model layers individually if necessary (e.g. attention_encoder, ...)
 # TODO (2): [o] Check masks
@@ -46,9 +54,9 @@ from model.Transformer_modules.pointer_net import PointerProbGenerator
 #               see others' implementations;
 # TODO (7): [4] Get rid of the lint or linting errors
 # TODO (8): [x] See the real data
-#      TODO (8-1): [x] Masks with tokens
-#      TODO (8-2): [x] logits with masks
-#      TODO (8-3): [x] actions; any invalid actions?
+#      TODO (8-1): [o] Masks with tokens
+#      TODO (8-2): [o] logits with masks
+#      TODO (8-3): [?] actions; any invalid actions?
 #      TODO (8-4): [x]
 # TODO (9): [o] Value Branch !!!!!!!!!!!!!!!!! or should we
 # TODO (10): [o] FATAL: MUST GET RID OF SOFTMAX IN THE GENERATOR as it allows the invalid actions to be chosen
@@ -82,15 +90,15 @@ class MyCustomTransformerModel(nn.Module):
 
     def encode(self, src, src_mask):
         # src: (batch_size, num_task==seq_len, d_embed_input)
-        # src_mask: (batch_size, 1, seq_len_src, seq_len_src)
+        # src_mask: (batch_size, 1, seq_len_src, seq_len_src)  # Mask MUST have the heading dim as 1 at dim=1
         # return: (batch_size, seq_len_src, d_embed_input)
         return self.encoder(self.src_embed(src), src_mask)
 
     def decode(self, tgt, encoder_out, tgt_mask, src_tgt_mask):
         # tgt: (batch_size, seq_len_tgt==1, d_embed_context)
         # encoder_out: (batch_size, seq_len_src, d_embed_input)
-        # tgt_mask: (batch_size, 1, seq_len_tgt, seq_len_tgt)
-        # src_tgt_mask: (batch_size, 1, seq_len_tgt, seq_len_src)
+        # tgt_mask: (batch_size, 1, seq_len_tgt, seq_len_tgt)      # Mask MUST have the heading dim as 1 at dim=1
+        # src_tgt_mask: (batch_size, 1, seq_len_tgt, seq_len_src)  # Mask MUST have the heading dim as 1 at dim=1
         # return: (batch_size, seq_len_tgt, d_embed_context)
         # If you need tgt_embed, use self.tgt_embed(tgt) instead of tgt in self.decoder()
         return self.decoder(tgt, encoder_out, tgt_mask, src_tgt_mask)
@@ -173,7 +181,7 @@ class MyCustomTransformerModel(nn.Module):
                 # src_pad_tokens,  # shape: (batch_size, src_seq_len)
                 # tgt_pad_tokens,  # shape: (batch_size, tgt_seq_len)
                 ):
-        self.device = src_dict["task_embeddings"].device
+        # self.device = src_dict["task_embeddings"].device
 
         # Prepare tokens for mask generations and context node
         # TODO: Check dims of the following tensors;
@@ -199,7 +207,7 @@ class MyCustomTransformerModel(nn.Module):
 
         # ENCODER
         # encoder_out: shape: (batch_size, src_seq_len, d_embed)
-        # a set of task embeddings encoded; permutation invariant
+        # A set of task embeddings encoded; permutation invariant
         # unsqueeze(1) has been applied to src_mask to add head dimension for broadcasting in multi-head attention
         encoder_out = self.encode(src_dict["task_embeddings"], src_mask.unsqueeze(1))
 
@@ -213,13 +221,14 @@ class MyCustomTransformerModel(nn.Module):
         decoder_out = self.decode(h_c_N, encoder_out, tgt_mask, src_tgt_mask.unsqueeze(1))  # h_c^(N+1)
         # Generator: query==decoder_out; key==encoder_out; return==logits
         # out: (batch_size, 1, seq_len_src==num_task_max)
-        out = self.generator(query=decoder_out, key=encoder_out, mask=src_tgt_mask)
+        out = self.generator(query=decoder_out, key=encoder_out, mask=src_tgt_mask)  # Watch out for the mask dim!!
         # assert out.shape[1] == 1  # TODO: Remove it later once the model runs stable
         # Get the logits
         out = out.squeeze(1)
 
         # out: (batch_size, src_seq_len) == (batch_size, n_actions) == (batch_size, num_task_max)
-        return out, decoder_out
+        # return out, decoder_out
+        return out, h_c_N  # TODO: This is a test solution; remove it very soon
 
     def make_src_mask(self, src):
         pad_mask = self.make_pad_mask(src, src)
@@ -259,7 +268,7 @@ class MyCustomTransformerModel(nn.Module):
 
         mask = key_mask & query_mask
         mask.requires_grad = False
-        return mask  # output shape: (n_batch, query_seq_len, key_seq_len)
+        return mask  # output shape: (n_batch, query_seq_len, key_seq_len)  # Keep in mind: 'NO HEADING DIM' here!!
 
     # def make_subsequent_mask(self, query, key):
     #     query_seq_len, key_seq_len = query.size(1), key.size(1)
@@ -277,22 +286,25 @@ class MyCustomRLlibModel(TorchModelV2, nn.Module):
                  model_config,
                  name):
 
-        TorchModelV2.__init__(self, obs_space, action_space, num_outputs, model_config, name)
+        # super(TorchModelV2, self).__init__()
         nn.Module.__init__(self)
+        super().__init__(obs_space, action_space, num_outputs, model_config, name)
+        # TorchModelV2.__init__(self, obs_space, action_space, num_outputs, model_config, name)
 
         # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         # self.device = device
 
         d_subobs = 2  # dimension of the input tokens!
-        d_embed_input = 128
+        d_embed_input = 32
         d_embed_context = 3 * d_embed_input  # 384 (==128*3)
-        d_model = 128  # dimension of model (:=d_k * h);
-        # d_model_decoder = 128
+        d_model = 32  # dimension of model (:=d_k * h);
+        d_model_decoder = 96  # maybe, should be the same as d_embed_context
         # TODO: Would you define d_model_decoder as well? Consider [d_embed_query]==(3*d_embed_input)==(d_embed_context)
-        n_layer_encoder = 3
+        n_layer_encoder = 2
         n_layer_decoder = 1
         h = 8  # number of heads
-        d_ff = 512  # dimension of feed forward; usually 2-4 times d_model
+        d_ff = 64  # dimension of feed forward; usually 2-4 times d_model
+        # d_ff_decoder = 512
         clip_in_generator = 10
         dr_rate = 0  # dropout rate; 0 in our case as we use reinforcement learning... Or may not?
         norm_eps = 1e-5  # epsilon parameter of layer normalization  # TODO: Check if this value works fine
@@ -317,15 +329,15 @@ class MyCustomRLlibModel(TorchModelV2, nn.Module):
         norm_encoder = nn.LayerNorm(d_embed_input, eps=norm_eps)
         # Module Level: Decoder
         attention_decoder = MultiHeadAttentionLayer(
-            d_model=d_model,
+            d_model=d_model_decoder,
             h=h,
-            q_fc=nn.Linear(d_embed_context, d_model),
-            kv_fc=nn.Linear(d_embed_input, d_model),
-            out_fc=nn.Linear(d_model, d_embed_context),
+            q_fc=nn.Linear(d_embed_context, d_model_decoder),
+            kv_fc=nn.Linear(d_embed_input, d_model_decoder),
+            out_fc=nn.Linear(d_model_decoder, d_embed_context),
             dr_rate=dr_rate)
         # position_ff_decoder = PositionWiseFeedForwardLayer(
-        #     fc1=nn.Linear(d_embed_context, d_ff),
-        #     fc2=nn.Linear(d_ff, d_embed_context),
+        #     fc1=nn.Linear(d_embed_context, d_ff_decoder),
+        #     fc2=nn.Linear(d_ff_decoder, d_embed_context),
         #     dr_rate=dr_rate)
         # norm_decoder = nn.LayerNorm(d_embed_context, eps=norm_eps)
 
@@ -371,16 +383,17 @@ class MyCustomRLlibModel(TorchModelV2, nn.Module):
             encoder=encoder,
             decoder=decoder,
             generator=generator,)
-        # Define the critic layer
-        # self.value_net = MyCustomTransformerModel(
-        #     src_embed= copy.deepcopy(input_embed),
-        #     # tgt_embed=tgt_embed,
-        #     encoder=copy.deepcopy(encoder),
-        #     decoder=decoder,
-        #     generator=generator,)
+        # Define the critic layers
         self.values = None
-        # num_actions = action_space.n
-        # self.value_layer = nn.Linear(num_actions, 1)
+        self.share_layer = True
+        if not self.share_layer:
+            self.value_net = MyCustomTransformerModel(
+                src_embed= copy.deepcopy(input_embed),
+                # tgt_embed=tgt_embed,
+                encoder=copy.deepcopy(encoder),
+                decoder=copy.deepcopy(decoder),
+                generator=PointerPlaceholder(),)
+
         self.value_branch = nn.Sequential(
             nn.Linear(d_embed_context, d_embed_context),
             nn.ReLU(),
@@ -394,7 +407,7 @@ class MyCustomRLlibModel(TorchModelV2, nn.Module):
         :param state:
         :return: x, state
         """
-        x = input_dict["obs"]
+        obs = input_dict["obs"]
 
         # Check if the data type of the pad tokens is torch's int32; if not, output a warning and convert it to int32
         # temp_token = x["pad_tokens"][0][0]
@@ -405,13 +418,181 @@ class MyCustomRLlibModel(TorchModelV2, nn.Module):
 
         # x: (batch_size, num_task_max)
         # h_c_N1: (batch_size, 1, d_embed_context)
-        x, h_c_N1 = self.policy_net(x)  # x: logits; RLlib expects raw logits, NOT softmax probabilities
-        self.values = h_c_N1.squeeze(1)  # self.values: (batch_size, d_embed_context)
-        # Do the rest of the forward pass here, if necessary
+        if self.share_layer:
+            x, h_c_N1 = self.policy_net(obs)  # x: logits; RLlib expects raw logits, NOT softmax probabilities
+            self.values = h_c_N1.squeeze(1)  # self.values: (batch_size, d_embed_context)
+        else:
+            x, _ = self.policy_net(obs)
+            self.values = self.value_net(obs)[1].squeeze(1)  # self.values: (batch_size, d_embed_context)
+
+        # Check batch dimension size
+        # if x.shape[0] != 1:
+        #     print(f"batch size = {x.shape[0]} != 1")
+        #     print("Stop!")
+        # else:
+        #     print(f"batch size = {x.shape[0]} == 1")
 
         return x, state
 
     def value_function(self):
         out = self.value_branch(self.values).squeeze(-1)  # out: (batch_size,)
         return out
+
+
+class MyMLPModel(TorchModelV2, nn.Module):
+    """
+    MLP
+    """
+    def __init__(self, obs_space, action_space, num_outputs, model_config, name,):
+        nn.Module.__init__(self)
+        super().__init__(obs_space, action_space, num_outputs, model_config, name)
+
+        # Get configuration for this custom model
+        '''
+        # Config example:
+        model_config = {
+            "custom_model_config": {
+                "fc_sizes": [128, 64],
+                "fc_activation": "relu",
+                "value_fc_sizes": [128, 64],
+                "value_fc_activation": "relu",
+                "is_same_shape": False,
+                "share_layers": False,
+            }
+        }
+        '''
+        if "is_same_shape" in model_config["custom_model_config"]:
+            # TODO: this may cause some confusion...
+            self.is_same_shape = model_config["custom_model_config"]["is_same_shape"]
+        else:
+            self.is_same_shape = False
+            print("is_same_shape not received!!")
+            print("is_same_shape == False")
+        if "fc_sizes" in model_config["custom_model_config"]:
+            self.fc_sizes = model_config["custom_model_config"]["fc_sizes"]
+        else:
+            self.fc_sizes = [256, 256]
+            print(f"fc_sizes param in custom_model_config has NOT been received!")
+            print(f"It goes with: fc_sizes = {self.fc_sizes}")
+        if "fc_activation" in model_config["custom_model_config"]:
+            self.fc_activation = model_config["custom_model_config"]["fc_activation"]
+        else:
+            self.fc_activation = "relu"
+        if "value_fc_sizes" in model_config["custom_model_config"]:
+            if self.is_same_shape:
+                self.value_fc_sizes = self.fc_sizes.copy()
+            else:
+                self.value_fc_sizes = model_config["custom_model_config"]["value_fc_sizes"]
+        else:
+            self.value_fc_sizes = [256, 256]
+            print(f"value_fc_sizes param in custom_model_config has NOT been received!")
+            print(f"It goes with: value_fc_sizes = {self.value_fc_sizes}")
+        if "value_fc_activation" in model_config["custom_model_config"]:
+            self.value_fc_activation = model_config["custom_model_config"]["value_fc_activation"]
+        else:
+            self.value_fc_activation = "relu"
+        # Define shared_layers flag
+        if "share_layers" in model_config["custom_model_config"]:
+            self.share_layers = model_config["custom_model_config"]["share_layers"]
+        else:
+            self.share_layers = False
+            print("share_layers not received!!")
+            print("share_layers == False")
+
+        # Define observation size
+        self.obs_size = get_preprocessor(obs_space)(obs_space).size  # (4 * num_task_max) + 2
+
+        # Initialize logits
+        self._logits = None
+        # Holds the current "base" output (before logits/value_out layer).
+        self._features = None
+        self._values = None
+
+        # Build the Module from fcs + 2xfc (action + value outs).
+        layers = []
+        prev_layer_size = int(np.product(obs_space.shape))  # TODO: why np?????
+        # Create layers and get fc_net
+        for size in self.fc_sizes[:]:
+            layers.append(
+                SlimFC(
+                    in_size=prev_layer_size,
+                    out_size=size,
+                    initializer=normc_initializer(1.0),
+                    activation_fn=self.fc_activation,
+                )
+            )
+            prev_layer_size = size
+        self.fc_net = nn.Sequential(*layers)
+
+        if not self.share_layers:
+            # Get VALUE fc layers
+            value_layers = []
+            prev_value_layer_size = int(np.product(obs_space.shape))
+            # Create layers and get fc_net
+            for size in self.value_fc_sizes[:]:
+                value_layers.append(
+                    SlimFC(
+                        in_size=prev_value_layer_size,
+                        out_size=size,
+                        initializer=normc_initializer(1.0),
+                        activation_fn=self.value_fc_activation,
+                    )
+                )
+                prev_value_layer_size = size
+            self.value_fc_net = nn.Sequential(*value_layers)
+        else:
+            self.value_fc_net = self.fc_net
+
+        # Get last layers
+        self.last_size = self.fc_sizes[-1]
+        self.last_value_size = self.value_fc_sizes[-1]
+        # Policy network's last layer
+        self.action_branch = nn.Linear(self.last_size, num_outputs)
+        # Value network's last layer
+        self.value_branch = nn.Linear(self.last_value_size, 1)
+
+    @override(ModelV2)
+    def value_function(self):
+        assert self._values is not None, "must call forward() first"
+        return torch.reshape(self.value_branch(self._values), [-1])
+
+    @override(TorchModelV2)
+    def forward(self, input_dict, state, seq_lens):
+        # Fetch the observation
+        obs = input_dict["obs_flat"]
+
+        # Forward pass through fc_net
+        self._features = self.fc_net(obs)
+
+        # If not sharing layers, forward pass through value_fc_net
+        # Else, _values are the same as _features
+        if not self.share_layers:
+            self._values = self.value_fc_net(obs)
+        else:
+            self._values = self._features
+
+        # Calculate logits
+        self._logits = self.action_branch(self._features)
+
+        # Apply action masking
+        pad_tasks = input_dict["obs"]["pad_tokens"]  # (batch_size, num_task_max); 0: not padded, 1: padded
+        done_tasks = input_dict["obs"]["completion_tokens"]  # (batch_size, num_task_max); 0: not done, 1: done
+        # Get action mask
+        action_mask = torch.zeros_like(self._logits)
+        action_mask[pad_tasks == 1] = FLOAT_MIN
+        action_mask[done_tasks == 1] = FLOAT_MIN
+        # Apply action mask
+        self._logits = self._logits + action_mask
+
+        # JUST FOR DEBUGGING
+        # if obs.shape[0] != 1:
+        #     print(f"batch size = {obs.shape[0]} != 1")
+        #     print("Stop!")
+        # else:
+        #     print(f"batch size = {obs.shape[0]} == 1")
+
+        # Return logits and state
+        return self._logits, state
+
+
 
