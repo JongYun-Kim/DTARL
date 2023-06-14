@@ -6,30 +6,28 @@ from ray.rllib.policy.policy import Policy
 # from ray import serve
 # RLLib Model
 from ray.rllib.models import ModelCatalog
-from model.my_rllib_models import MyCustomRLlibModel
+from ray.rllib.models.preprocessors import get_preprocessor
+from model.my_rllib_models import MyCustomRLlibModel, MyMLPModel
 # Environment
 from env.envs import SingleStaticEnv, GreedyPolicy
 from ray.tune.registry import register_env
 # Utils
+import torch
+import torch.nn.functional as F
 import numpy as np
+import matplotlib.pyplot as plt
+# import matplotlib.gridspec as gridspec
 import copy
 
 
 # Register your custom model and environment
 ModelCatalog.register_custom_model("custom_model", MyCustomRLlibModel)
+ModelCatalog.register_custom_model("custom_nn_model", MyMLPModel)
 # TODO: Is there a way to adjust the config of a restored policy?
 #       If the model name is different, it will not be restored. (Carefully determine the model name in training XD)
 register_env("test_env", lambda cfg: SingleStaticEnv(cfg))
 
 base_path = "../../../ray_results/PPO/"
-# algo_ckpt_file = "algorithm_state.pkl"
-# policy_ckpt_file = "policy_state.pkl"
-
-# Checkpoint for Algo class
-# checkpoint = "PPO_TARL_single_static_env_6e376_00000_0_2023-06-04_05-58-22/checkpoint_004000/"
-# checkpoint = base_path + checkpoint # + algo_ckpt_file
-# algo = Algorithm.from_checkpoint(checkpoint)
-# action = algo.compute_single_action(observation=obs, explore=True, policy_id="default_policy")
 
 # Checkpoint for Policy class
 checkpoint2 = "PPO_TARL_single_static_env_6e376_00000_0_2023-06-04_05-58-22/checkpoint_004000/policies/default_policy/"
@@ -47,10 +45,15 @@ env_config = {
     "num_task_min": num_task_min,
 }
 env = SingleStaticEnv(env_config)
+# Get preprocessor for MLP model (may cause error with transformer models;)
+preprocessor_cls = get_preprocessor(env.observation_space)
+preprocessor = preprocessor_cls(env.observation_space)
 
 # Define experiment configs
 num_experiments = 100000
+require_flatten = True
 do_render = False
+test_render = False
 reward_greedy = np.zeros(num_experiments)
 # reward_algo = np.zeros(num_experiments)
 reward_policy = np.zeros(num_experiments)
@@ -71,6 +74,8 @@ for i in range(num_experiments):
     obs = env.reset()
     obs_preserve = copy.deepcopy(obs)
     env_preserve = copy.deepcopy(env)
+    obs_test = copy.deepcopy(obs)
+    env_test = copy.deepcopy(env)
 
     # Get results from the greedy policy
     greedy_policy.reset(initial_observation=obs)
@@ -85,6 +90,8 @@ for i in range(num_experiments):
             env.render()
             response = input("Press enter to continue, if not no rendering anymore: ")
             do_render = True if response == "" else False
+        if require_flatten:
+            obs = preprocessor.transform(obs)
         action = policy.compute_single_action(obs, explore=False)
         action_history_temp[time_step] = action[0]
         obs, reward, done, _ = env.step(action)
@@ -109,6 +116,38 @@ for i in range(num_experiments):
         worst_obs = obs_preserve
         worst_env = copy.deepcopy(env_preserve)
         worst_actions = action_history_temp
+    if test_render:  # render policy behavior when it is worse than the greedy
+        # if reward_diff > 0.03:  # Policy is worse than greedy
+        # if np.abs(reward_diff) < 0.00001:  # Almost the same
+        if reward_diff < -0.1:  # Policy is better than greedy
+            print(f"reward_diff = {reward_diff}")
+            done = False
+            time_step = 0
+            while not done:
+                temp_obs = copy.deepcopy(obs_test)
+                if require_flatten:
+                    temp_obs = preprocessor.transform(temp_obs)
+                    temp_obs = torch.from_numpy(temp_obs).to(policy.device).unsqueeze(0)
+                else:
+                    for key in temp_obs:
+                        # Switch each dict key numpy array to torch tensor and move to the device
+                        temp_obs[key] = torch.from_numpy(temp_obs[key]).to(policy.device)
+                        temp_obs[key] = temp_obs[key].unsqueeze(0)  # add batch dimension
+                logits, _ = policy.model({
+                    "obs": temp_obs,
+                    "is_training": False,
+                }, [], None)
+                probs = F.softmax(logits, dim=1)
+                action_probs = probs[0].cpu().detach().numpy()
+                if require_flatten:
+                    obs_test = preprocessor.transform(obs_test)
+                action_test = policy.compute_single_action(obs_test, explore=False)
+                env_test.render(action_probs=action_probs)
+                response = input("Press enter to continue, if not no rendering anymore: ")
+                obs_test, _, done, _ = env_test.step(action_test)
+                time_step += 1
+            env_test.render()
+            response = input("Press enter to continue, if not no rendering anymore: ")
 
     print("Experiment {} done".format(i))
 
@@ -190,4 +229,16 @@ print("")
 #                     worst_actions=worst_actions, worst_actions_greedy=worst_actions_greedy)
 
 print("Special thanks to Copilot!")
+
+# Calculate reward_diffs
+reward_diffs = reward_policy - reward_greedy
+
+# Plot histogram
+plt.figure(figsize=(10, 5))
+plt.hist(reward_diffs, bins=100, edgecolor='black')
+plt.xlabel("Reward Difference (Policy - Greedy)")
+plt.ylabel("Number of Experiments")
+plt.title("Distribution of Reward Differences")
+plt.show()
+
 print("Done!")
